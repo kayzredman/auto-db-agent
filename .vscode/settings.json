@@ -1,0 +1,6 @@
+{
+  "git.postCommitCommand": "none",
+  "git.autofetch": false,
+  "git.scanRepositories": ["."],
+  "git.ignoredRepositories": ["client"]
+}
