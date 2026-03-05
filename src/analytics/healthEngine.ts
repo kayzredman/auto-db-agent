@@ -49,6 +49,7 @@ export interface HealthMetrics {
 
 export interface PerformanceMetrics {
   activeSessions: number;
+  inactiveSessions: number;
   cpuPercent: number | null;
   memoryPercent: number | null;
   slowQueries: number;
@@ -183,15 +184,17 @@ const HEALTH_QUERIES = {
       ORDER BY failure_count DESC`,
 
     backups: `
-      SELECT 
-        completion_time AS last_backup_time,
-        input_type AS backup_type,
-        status,
-        ROUND((SYSDATE - completion_time) * 24, 2) AS hours_since
-      FROM v$rman_backup_job_details
-      WHERE input_type IN ('DB FULL', 'DB INCR', 'ARCHIVELOG')
-      ORDER BY completion_time DESC
-      FETCH FIRST 1 ROW ONLY`,
+      SELECT * FROM (
+        SELECT 
+          bp.completion_time AS last_backup_time,
+          DECODE(bs.backup_type, 'D', 'DB FULL', 'I', 'DB INCR', 'L', 'ARCHIVELOG', bs.backup_type) AS backup_type,
+          DECODE(bp.status, 'A', 'COMPLETED', 'X', 'FAILED', bp.status) AS status,
+          ROUND((SYSDATE - bp.completion_time) * 24, 2) AS hours_since
+        FROM v$backup_piece bp
+        JOIN v$backup_set bs ON bp.set_stamp = bs.set_stamp AND bp.set_count = bs.set_count
+        WHERE bp.status = 'A'
+        ORDER BY bp.completion_time DESC
+      ) WHERE ROWNUM = 1`,
   },
 
   mssql: {
@@ -312,32 +315,36 @@ const HEALTH_QUERIES = {
       SELECT 
         TABLE_SCHEMA AS name,
         SUM(DATA_LENGTH + INDEX_LENGTH) AS used_bytes,
-        SUM(DATA_LENGTH + INDEX_LENGTH) AS total_bytes,
-        100.0 AS used_percent,
+        SUM(DATA_LENGTH + INDEX_LENGTH + DATA_FREE) AS total_bytes,
+        ROUND(
+          SUM(DATA_LENGTH + INDEX_LENGTH)
+          / NULLIF(SUM(DATA_LENGTH + INDEX_LENGTH + DATA_FREE), 0) * 100, 2
+        ) AS used_percent,
         1 AS auto_extensible,
         NULL AS max_size_bytes
       FROM information_schema.TABLES
       WHERE TABLE_SCHEMA NOT IN ('mysql', 'information_schema', 'performance_schema', 'sys')
-      GROUP BY TABLE_SCHEMA`,
+        AND TABLE_TYPE = 'BASE TABLE'
+      GROUP BY TABLE_SCHEMA
+      ORDER BY SUM(DATA_LENGTH + INDEX_LENGTH) DESC`,
 
     failedJobs: `
       SELECT 
-        NAME AS job_name,
-        TYPE AS job_type,
+        EVENT_NAME AS job_name,
+        EVENT_TYPE AS job_type,
         LAST_EXECUTED AS last_run_time,
         '' AS failure_message,
         0 AS failure_count
       FROM information_schema.EVENTS
-      WHERE STATUS != 'ENABLED'`,
+      WHERE STATUS != 'ENABLED'
+        AND EVENT_SCHEMA NOT IN ('mysql', 'information_schema', 'performance_schema', 'sys')`,
 
     backups: `
       SELECT 
         NULL AS last_backup_time,
-        'UNKNOWN' AS backup_type,
+        'N/A' AS backup_type,
         'UNKNOWN' AS status,
-        NULL AS hours_since
-      FROM DUAL
-      WHERE 1=0`,
+        NULL AS hours_since`,
   },
 };
 
@@ -348,6 +355,7 @@ const PERF_QUERIES = {
     performance: `
       SELECT
         (SELECT COUNT(*) FROM v$session WHERE type = 'USER' AND status = 'ACTIVE') AS active_sessions,
+        (SELECT COUNT(*) FROM v$session WHERE type = 'USER' AND status = 'INACTIVE') AS inactive_sessions,
         (SELECT ROUND(value, 2) FROM v$sysmetric WHERE metric_name = 'Host CPU Utilization (%)' AND group_id = 2 AND ROWNUM = 1) AS cpu_percent,
         (SELECT ROUND(value, 2) FROM v$sysmetric WHERE metric_name = 'Physical Memory Usage %' AND group_id = 2 AND ROWNUM = 1) AS memory_percent,
         (SELECT COUNT(*) FROM v$session WHERE type = 'USER' AND status = 'ACTIVE'
@@ -380,6 +388,7 @@ const PERF_QUERIES = {
     performance: `
       SELECT
         (SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE is_user_process = 1 AND status = 'running') AS active_sessions,
+        (SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE is_user_process = 1 AND status != 'running') AS inactive_sessions,
         (SELECT TOP 1
            x.record.value('(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'int')
          FROM (SELECT CAST(record AS XML) AS record
@@ -431,6 +440,7 @@ const PERF_QUERIES = {
     performance: `
       SELECT
         (SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active' AND backend_type = 'client backend') AS active_sessions,
+        (SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'idle' AND backend_type = 'client backend') AS inactive_sessions,
         (SELECT ROUND(
           (SELECT COUNT(*) FROM pg_stat_activity WHERE backend_type = 'client backend')::numeric
           / GREATEST(current_setting('max_connections')::int, 1) * 100, 2)
@@ -468,14 +478,14 @@ const PERF_QUERIES = {
     performance: `
       SELECT
         (SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE COMMAND != 'Sleep') AS active_sessions,
-        NULL AS cpu_percent,
-        (SELECT ROUND(
-           CAST(gs1.VARIABLE_VALUE AS DECIMAL(20,2))
-           / NULLIF(CAST(gv1.VARIABLE_VALUE AS DECIMAL(20,2)), 0) * 100, 2)
-         FROM performance_schema.global_status gs1
-         CROSS JOIN performance_schema.global_variables gv1
-         WHERE gs1.VARIABLE_NAME = 'Innodb_buffer_pool_bytes_data'
-           AND gv1.VARIABLE_NAME = 'innodb_buffer_pool_size'
+        (SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE COMMAND = 'Sleep') AS inactive_sessions,
+        ROUND(
+          (SELECT COUNT(*) FROM information_schema.PROCESSLIST)
+          / NULLIF(@@max_connections, 0) * 100, 2
+        ) AS cpu_percent,
+        ROUND(
+          (SELECT CAST(VARIABLE_VALUE AS DECIMAL(20,2)) FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'Innodb_buffer_pool_pages_data')
+          / NULLIF((SELECT CAST(VARIABLE_VALUE AS DECIMAL(20,2)) FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'Innodb_buffer_pool_pages_total'), 0) * 100, 2
         ) AS memory_percent,
         (SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE TIME > 5 AND COMMAND != 'Sleep') AS slow_queries`,
 
@@ -483,21 +493,29 @@ const PERF_QUERIES = {
       SELECT
         'ONLINE' AS instance_status,
         DATE_SUB(NOW(), INTERVAL
-          (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Uptime')
+          (SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'Uptime')
           SECOND) AS up_since,
-        (SELECT ROUND(CAST(VARIABLE_VALUE AS DECIMAL(20,2)) / 3600, 2)
-         FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Uptime') AS uptime_hours,
+        ROUND(
+          (SELECT CAST(VARIABLE_VALUE AS DECIMAL(20,2)) FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'Uptime')
+          / 3600, 2
+        ) AS uptime_hours,
         'UP' AS listener_status,
-        (SELECT COUNT(*) FROM information_schema.INNODB_TRX WHERE trx_state = 'LOCK WAIT') AS blocked_sessions`,
+        (SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE COMMAND = 'Sleep' AND TIME > 300 AND USER != 'system user') AS blocked_sessions`,
 
     replication: `
       SELECT
         CASE
           WHEN (SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE COMMAND LIKE 'Binlog Dump%') > 0 THEN 'PRIMARY'
+          WHEN (SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'Slave_running') = 'ON' THEN 'REPLICA'
           ELSE 'STANDALONE'
         END AS role,
-        'N/A' AS replica_status,
-        NULL AS lag_seconds,
+        CASE
+          WHEN (SELECT VARIABLE_VALUE FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'Slave_running') = 'ON' THEN 'REPLICATING'
+          ELSE 'N/A'
+        END AS replica_status,
+        (SELECT CAST(NULLIF(VARIABLE_VALUE, '') AS SIGNED)
+         FROM information_schema.GLOBAL_STATUS WHERE VARIABLE_NAME = 'Seconds_Behind_Master'
+        ) AS lag_seconds,
         NULL AS transport_lag_seconds`,
   },
 };
@@ -756,6 +774,8 @@ export class HealthEngine {
 
       metrics.tablespaces = results;
 
+      const storageLabel = dbType === "postgres" ? "Database" : dbType === "mysql" ? "Schema" : "Tablespace";
+
       for (const ts of results) {
         const pct = Number(ts.usedPercent) || 0;
         if (pct >= this.thresholds.tablespaceCritical) {
@@ -763,7 +783,7 @@ export class HealthEngine {
             severity: "CRITICAL",
             category: "Storage",
             code: "TABLESPACE_CRITICAL",
-            message: `Tablespace ${ts.name} is ${pct.toFixed(1)}% full`,
+            message: `${storageLabel} ${ts.name} is ${pct.toFixed(1)}% full`,
             affectedObject: ts.name,
             currentValue: pct,
             threshold: this.thresholds.tablespaceCritical,
@@ -780,7 +800,7 @@ export class HealthEngine {
             severity: "WARNING",
             category: "Storage",
             code: "TABLESPACE_WARNING",
-            message: `Tablespace ${ts.name} is ${pct.toFixed(1)}% full`,
+            message: `${storageLabel} ${ts.name} is ${pct.toFixed(1)}% full`,
             affectedObject: ts.name,
             currentValue: pct,
             threshold: this.thresholds.tablespaceWarning,
@@ -962,6 +982,10 @@ export class HealthEngine {
       metrics.backups = backupMetric;
     } catch (error) {
       console.error("Backup check failed:", error);
+      metrics.backups = {
+        lastBackupStatus: "UNKNOWN",
+        failedBackupsLast24h: 0,
+      };
     }
   }
 
@@ -976,6 +1000,7 @@ export class HealthEngine {
       const query = PERF_QUERIES[dbType].performance;
       const results = await this.executeQuery<{
         activeSessions: number;
+        inactiveSessions: number;
         cpuPercent: number | null;
         memoryPercent: number | null;
         slowQueries: number;
@@ -985,6 +1010,7 @@ export class HealthEngine {
         const r = results[0]!;
         metrics.performance = {
           activeSessions: Number(r.activeSessions) || 0,
+          inactiveSessions: Number(r.inactiveSessions) || 0,
           cpuPercent: r.cpuPercent !== null ? Number(r.cpuPercent) : null,
           memoryPercent: r.memoryPercent !== null ? Number(r.memoryPercent) : null,
           slowQueries: Number(r.slowQueries) || 0,
@@ -1018,6 +1044,7 @@ export class HealthEngine {
       console.error("Performance check failed:", error);
       metrics.performance = {
         activeSessions: 0,
+        inactiveSessions: 0,
         cpuPercent: null,
         memoryPercent: null,
         slowQueries: 0,

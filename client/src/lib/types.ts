@@ -179,6 +179,7 @@ export interface HealthRecommendation {
 
 export interface PerformanceMetrics {
   activeSessions: number;
+  inactiveSessions: number;
   cpuPercent: number | null;
   memoryPercent: number | null;
   slowQueries: number;

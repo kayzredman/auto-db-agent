@@ -615,7 +615,11 @@ export default function DatabaseDetailPage() {
                     <dd className="font-mono text-foreground">{healthReport.metrics.performance.activeSessions}</dd>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <dt className="text-muted flex items-center gap-1"><Cpu className="w-3 h-3" /> {instance.engine === 'postgres' ? 'Conn %' : 'CPU'}</dt>
+                    <dt className="text-muted flex items-center gap-1"><Users className="w-3 h-3" /> Inactive Sessions</dt>
+                    <dd className="font-mono text-muted">{healthReport.metrics.performance.inactiveSessions ?? 0}</dd>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <dt className="text-muted flex items-center gap-1"><Cpu className="w-3 h-3" /> {instance.db_type === 'postgres' || instance.db_type === 'mysql' ? 'Conn %' : 'CPU'}</dt>
                     <dd className={`font-mono ${
                       healthReport.metrics.performance.cpuPercent !== null && healthReport.metrics.performance.cpuPercent > 90
                         ? "text-danger font-bold" : "text-foreground"
@@ -626,7 +630,7 @@ export default function DatabaseDetailPage() {
                     </dd>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <dt className="text-muted flex items-center gap-1"><HardDrive className="w-3 h-3" /> {instance.engine === 'mssql' ? 'SQL Memory' : instance.engine === 'mysql' ? 'Buffer Pool' : 'Memory'}</dt>
+                    <dt className="text-muted flex items-center gap-1"><HardDrive className="w-3 h-3" /> {instance.db_type === 'mssql' ? 'SQL Memory' : instance.db_type === 'mysql' ? 'Buffer Pool' : 'Memory'}</dt>
                     <dd className="font-mono text-foreground">
                       {healthReport.metrics.performance.memoryPercent !== null
                         ? `${healthReport.metrics.performance.memoryPercent.toFixed(1)}%`
@@ -658,29 +662,43 @@ export default function DatabaseDetailPage() {
                 <dl className="space-y-2">
                   {/* Highest usage tablespace */}
                   {(() => {
-                    const sorted = [...healthReport.metrics.tablespaces].sort(
-                      (a, b) => (Number(b.usedPercent) || 0) - (Number(a.usedPercent) || 0)
-                    );
+                    const isNonOracle = instance.db_type === 'postgres' || instance.db_type === 'mysql';
+                    const sorted = isNonOracle
+                      ? [...healthReport.metrics.tablespaces].sort(
+                          (a, b) => (Number(b.usedBytes) || 0) - (Number(a.usedBytes) || 0)
+                        )
+                      : [...healthReport.metrics.tablespaces].sort(
+                          (a, b) => (Number(b.usedPercent) || 0) - (Number(a.usedPercent) || 0)
+                        );
                     const top = sorted[0]!;
                     const pct = Number(top.usedPercent) || 0;
+                    const totalUsed = healthReport.metrics.tablespaces.reduce((s, t) => s + (Number(t.usedBytes) || 0), 0);
                     return (
-                      <div className="flex justify-between text-sm">
-                        <dt className="text-muted truncate max-w-[140px]" title={top.name}>
-                          {instance.engine === 'postgres' ? 'Largest DB' : 'Max Tablespace'}
-                        </dt>
-                        <dd className={`font-mono ${
-                          pct >= 90 ? "text-danger font-bold"
-                            : pct >= 85 ? "text-warning font-bold"
-                              : "text-foreground"
-                        }`}>
-                          {pct.toFixed(1)}%
-                          <span className="text-xs text-muted ml-1">({top.name})</span>
-                        </dd>
-                      </div>
+                      <>
+                        <div className="flex justify-between text-sm">
+                          <dt className="text-muted truncate max-w-[140px]" title={top.name}>
+                            {instance.db_type === 'postgres' ? 'Largest DB' : instance.db_type === 'mysql' ? 'Largest Schema' : 'Max Tablespace'}
+                          </dt>
+                          <dd className={`font-mono ${
+                            !isNonOracle && pct >= 90 ? "text-danger font-bold"
+                              : !isNonOracle && pct >= 85 ? "text-warning font-bold"
+                                : "text-foreground"
+                          }`}>
+                            {isNonOracle ? formatBytes(Number(top.usedBytes) || 0) : `${pct.toFixed(1)}%`}
+                            <span className="text-xs text-muted ml-1">({top.name})</span>
+                          </dd>
+                        </div>
+                        {isNonOracle && (
+                          <div className="flex justify-between text-sm">
+                            <dt className="text-muted">Total Size</dt>
+                            <dd className="font-mono text-foreground">{formatBytes(totalUsed)}</dd>
+                          </div>
+                        )}
+                      </>
                     );
                   })()}
                   <div className="flex justify-between text-sm">
-                    <dt className="text-muted">{instance.engine === 'postgres' ? 'Databases' : instance.engine === 'mysql' ? 'Schemas' : 'Data Files'}</dt>
+                    <dt className="text-muted">{instance.db_type === 'postgres' ? 'Databases' : instance.db_type === 'mysql' ? 'Schemas' : 'Data Files'}</dt>
                     <dd className="font-mono text-foreground">{healthReport.metrics.tablespaces.length}</dd>
                   </div>
                   {healthReport.metrics.fra && (
@@ -705,7 +723,7 @@ export default function DatabaseDetailPage() {
                   )}
                 </dl>
               ) : (
-                <p className="text-xs text-muted">{instance.engine === 'postgres' ? 'No database size data' : instance.engine === 'mysql' ? 'No schema data' : 'No tablespace data'}</p>
+                <p className="text-xs text-muted">{instance.db_type === 'postgres' ? 'No database size data' : instance.db_type === 'mysql' ? 'No schema data' : 'No tablespace data'}</p>
               )}
             </div>
 
@@ -722,7 +740,7 @@ export default function DatabaseDetailPage() {
                     <dd className="font-mono text-foreground">{healthReport.metrics.availability.instanceStatus}</dd>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <dt className="text-muted">{instance.engine === 'oracle' ? 'Listener' : 'Connectivity'}</dt>
+                    <dt className="text-muted">{instance.db_type === 'oracle' ? 'Listener' : 'Connectivity'}</dt>
                     <dd className={`font-mono ${
                       healthReport.metrics.availability.listenerStatus === "UP" ? "text-success" : "text-danger"
                     }`}>
@@ -738,7 +756,7 @@ export default function DatabaseDetailPage() {
                     </dd>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <dt className="text-muted">Blocked Sessions</dt>
+                    <dt className="text-muted">{instance.db_type === 'mysql' ? 'Stale Conns' : 'Blocked Sessions'}</dt>
                     <dd className={`font-mono ${
                       healthReport.metrics.availability.blockedSessions > 5
                         ? "text-warning font-bold" : "text-foreground"
@@ -833,7 +851,7 @@ export default function DatabaseDetailPage() {
                     </dd>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <dt className="text-muted">{instance.engine === 'oracle' ? 'Apply Lag' : 'Replication Lag'}</dt>
+                    <dt className="text-muted">{instance.db_type === 'oracle' ? 'Apply Lag' : instance.db_type === 'mysql' ? 'Seconds Behind' : 'Replication Lag'}</dt>
                     <dd className="font-mono text-foreground">
                       {healthReport.metrics.replication.lagSeconds !== null
                         ? `${healthReport.metrics.replication.lagSeconds.toFixed(0)}s`
@@ -841,7 +859,7 @@ export default function DatabaseDetailPage() {
                     </dd>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <dt className="text-muted">{instance.engine === 'oracle' ? 'Transport Lag' : 'Transport Delay'}</dt>
+                    <dt className="text-muted">{instance.db_type === 'oracle' ? 'Transport Lag' : 'Transport Delay'}</dt>
                     <dd className="font-mono text-foreground">
                       {healthReport.metrics.replication.transportLagSeconds !== null
                         ? `${healthReport.metrics.replication.transportLagSeconds.toFixed(0)}s`
