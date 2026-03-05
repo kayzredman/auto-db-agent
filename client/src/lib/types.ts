@@ -99,3 +99,104 @@ export interface ListFilters {
   application?: string;
   team?: string;
 }
+
+// ── Tablespace Predictions ──
+
+export type PredictionRisk = "CRITICAL" | "HIGH" | "WARNING" | "OK";
+
+export interface GrowthSnapshot {
+  date: string;
+  usedBytes: number;
+}
+
+export interface TablespacePrediction {
+  name: string;
+  dbType: DbType;
+  currentUsedBytes: number;
+  currentTotalBytes: number;
+  currentUsedPercent: number;
+  freeBytes: number;
+  autoExtensible: boolean;
+  maxSizeBytes: number | null;
+  effectiveCapacityBytes: number;
+  effectiveFreeBytes: number;
+  growthPerDayBytes: number;
+  daysToFull: number | null;
+  risk: PredictionRisk;
+  message: string;
+  snapshots: GrowthSnapshot[];
+}
+
+export interface TablespacePredictionReport {
+  instanceId: string;
+  dbType: DbType;
+  analyzedAt: string;
+  snapshotWindowDays: number;
+  predictions: TablespacePrediction[];
+  highestRisk: PredictionRisk;
+}
+
+// ── FRA Risk Analysis ──
+
+export type FRARisk = "CRITICAL" | "HIGH" | "WARNING" | "OK";
+
+export interface FRARiskIssue {
+  severity: FRARisk;
+  code: string;
+  category: string;
+  message: string;
+  currentValue: number | string;
+  threshold: number | string;
+  detectedAt: string;
+}
+
+export interface FRARiskRecommendation {
+  priority: "HIGH" | "MEDIUM" | "LOW";
+  category: string;
+  title: string;
+  description: string;
+  action: string;
+  reference: string;
+  relatedIssueCode: string;
+}
+
+export interface RecoveryAreaMetrics {
+  name: string;
+  totalBytes: number;
+  usedBytes: number;
+  usedPercent: number;
+  reclaimableBytes: number;
+  effectiveFreeBytes: number;
+}
+
+export interface ArchiveGenerationMetrics {
+  avgDailyGenerationBytes: number;
+  todayGenerationBytes: number;
+  deviationPercent: number;
+  analysisDays: number;
+  dailyBreakdown: DailyGeneration[];
+}
+
+export interface DailyGeneration {
+  date: string;
+  generationBytes: number;
+}
+
+export interface FlashbackMetrics {
+  enabled: boolean;
+  retentionMinutes: number;
+  oldestFlashbackTime: string | null;
+  estimatedSpaceBytes: number;
+}
+
+export interface FRARiskReport {
+  instanceId: string;
+  dbType: DbType;
+  analyzedAt: string;
+  recoveryArea: RecoveryAreaMetrics | null;
+  archiveGeneration: ArchiveGenerationMetrics | null;
+  flashback: FlashbackMetrics | null;
+  issues: FRARiskIssue[];
+  recommendations: FRARiskRecommendation[];
+  overallRisk: FRARisk;
+}

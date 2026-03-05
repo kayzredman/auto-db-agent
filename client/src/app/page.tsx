@@ -9,7 +9,10 @@ import {
   XCircle,
   RefreshCw,
   Clock,
+  TrendingUp,
+  Shield,
 } from "lucide-react";
+import Link from "next/link";
 import { getDatabaseHealth } from "@/lib/api";
 import type { HealthSummary, Environment } from "@/lib/types";
 import { StatusBadge, StatCard, Card, Spinner } from "@/components/ui";
@@ -178,7 +181,8 @@ export default function DashboardPage() {
                   <th className="pb-3 pr-4">Type</th>
                   <th className="pb-3 pr-4">Environment</th>
                   <th className="pb-3 pr-4">Status</th>
-                  <th className="pb-3 text-right">Latency</th>
+                  <th className="pb-3 pr-4 text-right">Latency</th>
+                  <th className="pb-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -207,11 +211,36 @@ export default function DashboardPage() {
                     <td className="py-3 pr-4">
                       <StatusBadge status={inst.health.status} />
                     </td>
-                    <td className="py-3 text-right">
+                    <td className="py-3 pr-4 text-right">
                       <span className="inline-flex items-center gap-1 text-xs text-muted">
                         <Clock className="w-3 h-3" />
                         {inst.health.latencyMs}ms
                       </span>
+                    </td>
+                    <td className="py-3 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <Link
+                          href={`/databases/${inst.instanceId}/predictions`}
+                          className="p-1.5 rounded-lg hover:bg-primary/15 text-muted hover:text-primary transition-colors"
+                          title="Storage Predictions"
+                        >
+                          <TrendingUp className="w-3.5 h-3.5" />
+                        </Link>
+                        <Link
+                          href={`/databases/${inst.instanceId}/fra-risk`}
+                          className="p-1.5 rounded-lg hover:bg-info/15 text-muted hover:text-info transition-colors"
+                          title="FRA Risk"
+                        >
+                          <Shield className="w-3.5 h-3.5" />
+                        </Link>
+                        <Link
+                          href={`/databases/${inst.instanceId}`}
+                          className="p-1.5 rounded-lg hover:bg-surface-hover text-muted hover:text-foreground transition-colors"
+                          title="View Details"
+                        >
+                          <Database className="w-3.5 h-3.5" />
+                        </Link>
+                      </div>
                     </td>
                   </tr>
                 ))}

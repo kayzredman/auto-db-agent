@@ -32,3 +32,35 @@ export type {
   BackupAnomalyReport,
   BackupAnomalyEngineConfig,
 } from "./backupAnomalyEngine";
+
+export {
+  TablespacePredictionEngine,
+  createTablespacePredictionEngine,
+  DEFAULT_RISK_BANDS,
+} from "./tablespacePredictionEngine";
+
+export type {
+  PredictionRisk,
+  TablespacePrediction,
+  GrowthSnapshot,
+  TablespacePredictionReport,
+  TablespacePredictionConfig,
+} from "./tablespacePredictionEngine";
+
+export {
+  FRARiskEngine,
+  createFRARiskEngine,
+  DEFAULT_FRA_THRESHOLDS,
+} from "./fraRiskEngine";
+
+export type {
+  FRARisk,
+  FRARiskIssue,
+  FRARiskRecommendation,
+  RecoveryAreaMetrics,
+  ArchiveGenerationMetrics,
+  DailyGeneration,
+  FlashbackMetrics,
+  FRARiskReport,
+  FRARiskEngineConfig,
+} from "./fraRiskEngine";

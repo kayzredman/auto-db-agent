@@ -6,28 +6,44 @@ import type {
   UpdatePayload,
   CredentialsPayload,
   ListFilters,
+  TablespacePredictionReport,
+  FRARiskReport,
 } from "./types";
 
 const BASE = "";
 
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      "X-User-Id": "ui-admin",
-      ...(init?.headers ?? {}),
-    },
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(
-      (body as Record<string, string>).error ??
-        (body as Record<string, string>).message ??
-        `Request failed: ${res.status}`
-    );
+async function request<T>(url: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
+  const { timeoutMs, ...fetchInit } = init ?? {};
+  const controller = new AbortController();
+  const timeout = timeoutMs ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+
+  try {
+    const res = await fetch(`${BASE}${url}`, {
+      ...fetchInit,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "X-User-Id": "ui-admin",
+        ...(fetchInit.headers ?? {}),
+      },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(
+        (body as Record<string, string>).error ??
+          (body as Record<string, string>).message ??
+          `Request failed: ${res.status}`
+      );
+    }
+    return res.json() as Promise<T>;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error("Request timed out — the query may take a while on large databases. Try again shortly.");
+    }
+    throw err;
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
-  return res.json() as Promise<T>;
 }
 
 // ── Health ──
@@ -110,4 +126,32 @@ export async function deleteDatabase(
   id: string
 ): Promise<{ success: boolean; message: string }> {
   return request(`/api/databases/${id}`, { method: "DELETE" });
+}
+
+// ── Predictions ──
+
+export async function getTablespacePredictions(
+  id: string
+): Promise<TablespacePredictionReport> {
+  return request(`/api/databases/${id}/predictions`, { timeoutMs: 120_000 });
+}
+
+export async function recordTablespaceSnapshot(
+  id: string
+): Promise<{ success: boolean; instanceId: string; tablespacesRecorded: number; snapshotDate: string }> {
+  return request(`/api/databases/${id}/predictions/snapshot`, { method: "POST", timeoutMs: 120_000 });
+}
+
+// ── FRA Risk ──
+
+export async function getFRARisk(
+  id: string
+): Promise<FRARiskReport> {
+  return request(`/api/databases/${id}/fra-risk`, { timeoutMs: 120_000 });
+}
+
+export async function recordFRASnapshot(
+  id: string
+): Promise<{ success: boolean; instanceId: string; snapshotDate: string }> {
+  return request(`/api/databases/${id}/fra-risk/snapshot`, { method: "POST", timeoutMs: 120_000 });
 }

@@ -110,21 +110,31 @@ const HEALTH_QUERIES = {
     tablespaces: `
       SELECT 
         ts.tablespace_name AS name,
-        NVL(used.bytes, 0) AS used_bytes,
+        NVL(awr.used_bytes, 0) AS used_bytes,
         NVL(ts_size.bytes, 0) AS total_bytes,
-        ROUND(NVL(used.bytes, 0) / NULLIF(ts_size.bytes, 0) * 100, 2) AS used_percent,
-        CASE WHEN df.autoextensible = 'YES' THEN 1 ELSE 0 END AS auto_extensible,
-        df.maxbytes AS max_size_bytes
+        ROUND(NVL(awr.used_bytes, 0) / NULLIF(ts_size.bytes, 0) * 100, 2) AS used_percent,
+        NVL(df_agg.auto_ext, 0) AS auto_extensible,
+        df_agg.max_bytes AS max_size_bytes
       FROM dba_tablespaces ts
       LEFT JOIN (
         SELECT tablespace_name, SUM(bytes) bytes
         FROM dba_data_files GROUP BY tablespace_name
       ) ts_size ON ts.tablespace_name = ts_size.tablespace_name
       LEFT JOIN (
-        SELECT tablespace_name, SUM(bytes) bytes
-        FROM dba_segments GROUP BY tablespace_name
-      ) used ON ts.tablespace_name = used.tablespace_name
-      LEFT JOIN dba_data_files df ON ts.tablespace_name = df.tablespace_name AND ROWNUM = 1
+        SELECT vt.name AS tablespace_name,
+               MAX(h.tablespace_usedsize) * ts2.block_size AS used_bytes
+        FROM dba_hist_tbspc_space_usage h
+        JOIN v$tablespace vt ON h.tablespace_id = vt.ts#
+        JOIN dba_tablespaces ts2 ON vt.name = ts2.tablespace_name
+        WHERE h.snap_id = (SELECT MAX(snap_id) FROM dba_hist_tbspc_space_usage)
+        GROUP BY vt.name, ts2.block_size
+      ) awr ON ts.tablespace_name = awr.tablespace_name
+      LEFT JOIN (
+        SELECT tablespace_name,
+               MAX(CASE WHEN autoextensible = 'YES' THEN 1 ELSE 0 END) AS auto_ext,
+               SUM(CASE WHEN autoextensible = 'YES' THEN maxbytes ELSE bytes END) AS max_bytes
+        FROM dba_data_files GROUP BY tablespace_name
+      ) df_agg ON ts.tablespace_name = df_agg.tablespace_name
       WHERE ts.contents != 'TEMPORARY'`,
 
     fra: `

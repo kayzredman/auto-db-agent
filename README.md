@@ -1,6 +1,6 @@
 # Auto DBA Agent
 
-An enterprise-grade autonomous database administration agent supporting multi-database management with encrypted credential storage, health monitoring, backup anomaly detection, and a responsive web UI. Built for DBAs managing heterogeneous database environments across PostgreSQL, MySQL, SQL Server, and Oracle.
+An enterprise-grade autonomous database administration agent supporting multi-database management with encrypted credential storage, health monitoring, backup anomaly detection, tablespace growth predictions, FRA risk analysis, and a responsive web UI. Built for DBAs managing heterogeneous database environments across PostgreSQL, MySQL, SQL Server, and Oracle.
 
 ## Tech Stack
 
@@ -47,7 +47,11 @@ auto-dba-agent/
 │   │   │       ├── onboard/
 │   │   │       │   └── page.tsx     # 3-step onboard wizard
 │   │   │       └── [id]/
-│   │   │           └── page.tsx     # Instance detail + CRUD modals
+│   │   │           ├── page.tsx     # Instance detail + CRUD modals
+│   │   │           ├── predictions/
+│   │   │           │   └── page.tsx # Tablespace growth predictions
+│   │   │           └── fra-risk/
+│   │   │               └── page.tsx # FRA / Recovery Area risk analysis
 │   │   ├── components/
 │   │   │   ├── Sidebar.tsx          # Navigation sidebar
 │   │   │   ├── MobileNav.tsx        # Responsive mobile menu
@@ -62,8 +66,10 @@ auto-dba-agent/
 │       └── 001_internal_metrics_schema.sql
 ├── src/                             # Express Backend
 │   ├── analytics/
-│   │   ├── healthEngine.ts          # Health checks & OEM recommendations
-│   │   ├── backupAnomalyEngine.ts   # Backup anomaly detection
+│   │   ├── healthEngine.ts              # Health checks & OEM recommendations
+│   │   ├── backupAnomalyEngine.ts       # Backup anomaly detection
+│   │   ├── tablespacePredictionEngine.ts # Tablespace growth predictions (AWR)
+│   │   ├── fraRiskEngine.ts             # FRA / Recovery Area risk analysis
 │   │   └── index.ts
 │   ├── config/                      # Configuration management
 │   ├── connectors/
@@ -182,6 +188,10 @@ Base path: `/api/databases`
 | `POST` | `/:id/deactivate` | Deactivate instance |
 | `POST` | `/:id/reactivate` | Reactivate instance |
 | `GET` | `/:id/health` | Instance health check |
+| `GET` | `/:id/predictions` | Tablespace growth predictions |
+| `POST` | `/:id/predictions/snapshot` | Record tablespace snapshot |
+| `GET` | `/:id/fra-risk` | FRA / Recovery Area risk analysis |
+| `POST` | `/:id/fra-risk/snapshot` | Record FRA snapshot |
 
 ### Query Parameters (GET /)
 
@@ -309,6 +319,89 @@ The Health Engine performs automated checks aligned with OEM best practices:
 }
 ```
 
+## Tablespace Prediction Engine
+
+Predicts tablespace growth and estimates days-to-full using linear regression over historical snapshots.
+
+### Oracle AWR Integration
+
+For Oracle databases, the engine leverages **Oracle's built-in AWR** (`DBA_HIST_TBSPC_SPACE_USAGE`) for both current usage and historical growth data. This eliminates the need for manual snapshot recording and delivers sub-second response times — avoiding the 50-180 second queries against `dba_segments` that are typical on large production databases.
+
+| Data Source | View | Purpose |
+|-------------|------|----------|
+| Current usage | `DBA_HIST_TBSPC_SPACE_USAGE` (latest snap) | Tablespace used bytes |
+| Historical growth | `DBA_HIST_TBSPC_SPACE_USAGE` (grouped by day) | Daily usage trend |
+| Tablespace metadata | `dba_data_files`, `dba_tablespaces` | Total size, auto-extensible, max size |
+
+For non-Oracle databases, the engine uses live queries for current usage and internal PostgreSQL snapshots (`ts_growth_snapshots`) for historical growth.
+
+### Risk Classification
+
+| Risk | Days to Full |
+|------|--------------|
+| CRITICAL | ≤ 7 days |
+| HIGH | ≤ 15 days |
+| WARNING | ≤ 30 days |
+| OK | > 30 days or no growth |
+
+### Response Structure
+
+```json
+{
+  "instanceId": "uuid",
+  "dbType": "oracle",
+  "analyzedAt": "2026-03-05T10:00:35.419Z",
+  "snapshotWindowDays": 7,
+  "predictions": [
+    {
+      "name": "TBS_USER",
+      "dbType": "oracle",
+      "currentUsedBytes": 1092211376128,
+      "currentTotalBytes": 1166008123392,
+      "currentUsedPercent": 93.67,
+      "freeBytes": 73796747264,
+      "autoExtensible": true,
+      "maxSizeBytes": 1166009155584,
+      "effectiveCapacityBytes": 1166009155584,
+      "effectiveFreeBytes": 73797779456,
+      "growthPerDayBytes": 3375684461,
+      "daysToFull": 21.86,
+      "risk": "WARNING",
+      "message": "TBS_USER: WARNING — estimated full in 21.9 days (growing ~3219.30 MB/day). Monitor closely.",
+      "snapshots": [
+        { "date": "2026-02-26T00:00:00.000Z", "usedBytes": 1068581584896 },
+        { "date": "2026-03-05T00:00:00.000Z", "usedBytes": 1092211376128 }
+      ]
+    }
+  ],
+  "highestRisk": "WARNING"
+}
+```
+
+## FRA Risk Engine
+
+Analyzes Flash Recovery Area (FRA) / Recovery Area usage and risk across all database types.
+
+### Checks Performed
+
+| Check | Source | Applies To |
+|-------|--------|------------|
+| Recovery area usage | `v$recovery_file_dest` | Oracle |
+| Archive generation rate | `v$archived_log` | Oracle |
+| Flashback space usage | `v$flashback_database_log` | Oracle |
+| Transaction log usage | `sys.dm_db_log_space_usage` | SQL Server |
+| WAL directory size | `pg_ls_waldir()` | PostgreSQL |
+| Binary log space | `performance_schema` | MySQL |
+
+### Risk Classification
+
+| Risk | Condition |
+|------|-----------|
+| CRITICAL | FRA > 90% full |
+| HIGH | FRA > 85% AND high archive generation growth |
+| WARNING | FRA > 70% |
+| OK | FRA < 70% |
+
 ## Backup Anomaly Engine
 
 Detects backup anomalies by comparing today's metrics against a 7-day rolling average.
@@ -396,6 +489,8 @@ Detects backup anomalies by comparing today's metrics against a 7-day rolling av
 | `health_check_results` | Historical health check data |
 | `backup_history` | Backup tracking |
 | `tablespace_snapshots` | Tablespace usage history |
+| `ts_growth_snapshots` | Daily tablespace growth data points per instance |
+| `fra_snapshots` | FRA / Recovery Area snapshots per instance |
 | `fra_growth_history` | Flash Recovery Area tracking |
 | `action_logs` | Action audit logs |
 
@@ -435,9 +530,11 @@ The frontend is a responsive Next.js application at `client/`.
 | Route | Description |
 |-------|-------------|
 | `/` | **Dashboard** — Health overview with stat cards, environment breakdown, instance health table |
-| `/databases` | **Database List** — Filterable, searchable grid of all managed database instances |
+| `/databases` | **Database List** — Filterable, searchable grid with prediction & FRA risk quick links |
 | `/databases/onboard` | **Onboard Wizard** — 3-step form: Connection → Credentials → Options |
 | `/databases/[id]` | **Instance Detail** — Full details with edit, credentials, deactivate/reactivate, and delete modals |
+| `/databases/[id]/predictions` | **Predictions** — Tablespace growth trends, days-to-full, risk classification per tablespace |
+| `/databases/[id]/fra-risk` | **FRA Risk** — Recovery area usage, archive generation stats, flashback metrics, risk issues |
 
 ### Features
 
@@ -449,7 +546,10 @@ The frontend is a responsive Next.js application at `client/`.
 - Auto-detect SYS → SYSDBA privilege
 - Inline credential updates with role support
 - Deactivate/reactivate and permanent delete workflows
+- Tablespace prediction cards with usage bars, growth/day, days-to-full, and risk badges
+- FRA risk dashboard with recovery area usage, archive generation charts, and flashback metrics
 - API proxy via Next.js rewrites (frontend `:3001` → backend `:3000`)
+- 120-second client-side timeout with user-friendly error messages for long-running operations
 
 ### Shared UI Components
 
@@ -486,6 +586,10 @@ npm run build:client # Next.js production build
 - [x] Responsive Next.js Web UI
 - [x] Oracle Thick mode support
 - [x] Oracle privileged connections (SYSDBA/SYSOPER)
+- [x] Tablespace Prediction Engine with linear regression
+- [x] Oracle AWR integration (`DBA_HIST_TBSPC_SPACE_USAGE`) for sub-second predictions
+- [x] FRA / Recovery Area Risk Engine
+- [x] Prediction & FRA Risk UI pages
 - [ ] Authentication middleware (JWT)
 - [ ] Role-based access control
 - [ ] Scheduled health checks (cron-based)

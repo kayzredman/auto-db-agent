@@ -119,7 +119,7 @@ export default function OnboardPage() {
         payload.additionalOptions = { role: form.role };
       }
 
-      const res = await onboardDatabase(payload as Parameters<typeof onboardDatabase>[0]);
+      const res = await onboardDatabase(payload as unknown as Parameters<typeof onboardDatabase>[0]);
       setResult(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Onboarding failed");

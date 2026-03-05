@@ -185,3 +185,40 @@ CREATE INDEX IF NOT EXISTS idx_onboarding_audit_instance
 
 CREATE INDEX IF NOT EXISTS idx_onboarding_audit_time
     ON onboarding_audit (performed_at DESC);
+
+-- ─── Tablespace Growth Snapshots (for Prediction Engine) ─────────────────────
+-- Stores daily tablespace size snapshots per instance for linear-regression
+-- growth predictions. Populated by TablespacePredictionEngine.recordSnapshot().
+
+CREATE TABLE IF NOT EXISTS ts_growth_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    instance_id UUID NOT NULL REFERENCES database_instances(id) ON DELETE CASCADE,
+    tablespace_name VARCHAR(200) NOT NULL,
+    used_bytes BIGINT NOT NULL,
+    total_bytes BIGINT NOT NULL,
+    snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_ts_growth_snapshot UNIQUE (instance_id, tablespace_name, snapshot_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ts_growth_snapshots_lookup
+    ON ts_growth_snapshots (instance_id, tablespace_name, snapshot_date DESC);
+
+-- ─── FRA / Recovery Area Snapshots (for FRA Risk Engine) ─────────────────────
+-- Stores daily recovery-area usage snapshots per instance for trending and
+-- risk analysis. Populated by FRARiskEngine.recordSnapshot().
+
+CREATE TABLE IF NOT EXISTS fra_snapshots (
+    id BIGSERIAL PRIMARY KEY,
+    instance_id UUID NOT NULL REFERENCES database_instances(id) ON DELETE CASCADE,
+    area_name VARCHAR(200) NOT NULL,
+    used_bytes BIGINT NOT NULL,
+    total_bytes BIGINT NOT NULL,
+    reclaimable_bytes BIGINT NOT NULL DEFAULT 0,
+    snapshot_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_fra_snapshot UNIQUE (instance_id, area_name, snapshot_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_fra_snapshots_lookup
+    ON fra_snapshots (instance_id, area_name, snapshot_date DESC);

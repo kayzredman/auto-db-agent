@@ -2,6 +2,8 @@ import { Router, Request, Response } from "express";
 import { OnboardingService, OnboardRequest, UpdateRequest, CredentialUpdateRequest } from "../services/onboarding.service";
 import { DatabaseRegistry } from "../database/registry";
 import { DbType, Environment } from "../connectors";
+import { TablespacePredictionEngine, FRARiskEngine } from "../analytics";
+import pg from "pg";
 
 type ListFilters = {
   environment?: Environment | undefined;
@@ -13,9 +15,12 @@ type ListFilters = {
 
 export function createDatabaseRoutes(
   onboardingService: OnboardingService,
-  registry: DatabaseRegistry
+  registry: DatabaseRegistry,
+  metricsPool?: pg.Pool
 ): Router {
   const router = Router();
+  const predictionEngine = new TablespacePredictionEngine();
+  const fraRiskEngine = new FRARiskEngine();
 
   // List all database instances with optional filters
   router.get("/", async (req: Request, res: Response) => {
@@ -251,6 +256,155 @@ export function createDatabaseRoutes(
     } catch (error) {
       res.status(500).json({
         error: error instanceof Error ? error.message : "Failed to check health"
+      });
+    }
+  });
+
+  // Tablespace prediction for specific instance
+  router.get("/:id/predictions", async (req: Request, res: Response) => {
+    try {
+      if (!metricsPool) {
+        res.status(503).json({ error: "Metrics database not available" });
+        return;
+      }
+
+      const instanceId = req.params.id as string;
+      const instance = registry.getInstance(instanceId);
+      if (!instance) {
+        res.status(404).json({ error: "Instance not found" });
+        return;
+      }
+
+      const connector = registry.getConnector(instanceId);
+      if (!connector) {
+        res.status(503).json({ error: "Instance not connected. Ensure it is active and connected." });
+        return;
+      }
+
+      const report = await predictionEngine.analyze(
+        instanceId,
+        instance.dbType,
+        connector,
+        metricsPool
+      );
+
+      res.json(report);
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to generate predictions"
+      });
+    }
+  });
+
+  // Record tablespace snapshot (call daily for growth data)
+  router.post("/:id/predictions/snapshot", async (req: Request, res: Response) => {
+    try {
+      if (!metricsPool) {
+        res.status(503).json({ error: "Metrics database not available" });
+        return;
+      }
+
+      const instanceId = req.params.id as string;
+      const instance = registry.getInstance(instanceId);
+      if (!instance) {
+        res.status(404).json({ error: "Instance not found" });
+        return;
+      }
+
+      const connector = registry.getConnector(instanceId);
+      if (!connector) {
+        res.status(503).json({ error: "Instance not connected. Ensure it is active and connected." });
+        return;
+      }
+
+      const recorded = await predictionEngine.recordSnapshot(
+        instanceId,
+        instance.dbType,
+        connector,
+        metricsPool
+      );
+
+      res.json({
+        success: true,
+        instanceId,
+        tablespacesRecorded: recorded,
+        snapshotDate: new Date().toISOString().split("T")[0],
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to record snapshot"
+      });
+    }
+  });
+
+  // ── FRA Risk Analysis ──
+
+  // Analyze FRA / recovery area risk
+  router.get("/:id/fra-risk", async (req: Request, res: Response) => {
+    try {
+      const instanceId = req.params.id as string;
+      const instance = registry.getInstance(instanceId);
+      if (!instance) {
+        res.status(404).json({ error: "Instance not found" });
+        return;
+      }
+
+      const connector = registry.getConnector(instanceId);
+      if (!connector) {
+        res.status(503).json({ error: "Instance not connected. Ensure it is active and connected." });
+        return;
+      }
+
+      const report = await fraRiskEngine.analyze(
+        instanceId,
+        instance.dbType,
+        connector
+      );
+
+      res.json(report);
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to analyze FRA risk"
+      });
+    }
+  });
+
+  // Record FRA snapshot (call daily for trending)
+  router.post("/:id/fra-risk/snapshot", async (req: Request, res: Response) => {
+    try {
+      if (!metricsPool) {
+        res.status(503).json({ error: "Metrics database not available" });
+        return;
+      }
+
+      const instanceId = req.params.id as string;
+      const instance = registry.getInstance(instanceId);
+      if (!instance) {
+        res.status(404).json({ error: "Instance not found" });
+        return;
+      }
+
+      const connector = registry.getConnector(instanceId);
+      if (!connector) {
+        res.status(503).json({ error: "Instance not connected. Ensure it is active and connected." });
+        return;
+      }
+
+      const recorded = await fraRiskEngine.recordSnapshot(
+        instanceId,
+        instance.dbType,
+        connector,
+        metricsPool
+      );
+
+      res.json({
+        success: recorded,
+        instanceId,
+        snapshotDate: new Date().toISOString().split("T")[0],
+      });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to record FRA snapshot"
       });
     }
   });

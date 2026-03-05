@@ -92,7 +92,7 @@ async function main(): Promise<void> {
   }
 
   // 5. Mount routes
-  app.use("/api/databases", createDatabaseRoutes(onboardingService, registry));
+  app.use("/api/databases", createDatabaseRoutes(onboardingService, registry, metricsPool));
 
   // 6. Start server
   app.listen(PORT, () => {
@@ -109,6 +109,8 @@ async function main(): Promise<void> {
     console.log("  POST /api/databases/:id/reactivate  - Reactivate");
     console.log("  DELETE /api/databases/:id        - Delete instance");
     console.log("  GET  /api/databases/:id/health   - Instance health");
+    console.log("  GET  /api/databases/:id/predictions - Tablespace predictions");
+    console.log("  POST /api/databases/:id/predictions/snapshot - Record snapshot");
   });
 }
 

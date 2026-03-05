@@ -16,6 +16,7 @@ import {
   XCircle,
   Save,
   X,
+  TrendingUp,
 } from "lucide-react";
 import {
   getDatabase,
@@ -228,6 +229,12 @@ export default function DatabaseDetailPage() {
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <StatusBadge status={instance.status} size="md" />
+          <Button variant="ghost" size="sm" onClick={() => router.push(`/databases/${id}/predictions`)}>
+            <TrendingUp className="w-3.5 h-3.5" /> Predictions
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => router.push(`/databases/${id}/fra-risk`)}>
+            <Activity className="w-3.5 h-3.5" /> FRA Risk
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => setEditOpen(true)}>
             <Edit3 className="w-3.5 h-3.5" /> Edit
           </Button>

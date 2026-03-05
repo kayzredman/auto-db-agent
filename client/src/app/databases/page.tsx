@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Database,
   Search,
@@ -10,6 +11,8 @@ import {
   PlusCircle,
   ExternalLink,
   Clock,
+  TrendingUp,
+  Shield,
 } from "lucide-react";
 import { listDatabases } from "@/lib/api";
 import type { DatabaseInstance, Environment, DbType, InstanceStatus } from "@/lib/types";
@@ -30,6 +33,7 @@ const dbTypeIcons: Record<DbType, string> = {
 };
 
 export default function DatabasesPage() {
+  const router = useRouter();
   const [instances, setInstances] = useState<DatabaseInstance[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -222,7 +226,23 @@ export default function DatabasesPage() {
                   ) : (
                     <span className="text-xs text-muted">No health check yet</span>
                   )}
-                  <ExternalLink className="w-3.5 h-3.5 text-muted" />
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); router.push(`/databases/${inst.id}/predictions`); }}
+                      className="p-1 rounded hover:bg-primary/15 text-muted hover:text-primary transition-colors"
+                      title="Storage Predictions"
+                    >
+                      <TrendingUp className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); router.push(`/databases/${inst.id}/fra-risk`); }}
+                      className="p-1 rounded hover:bg-info/15 text-muted hover:text-info transition-colors"
+                      title="FRA Risk"
+                    >
+                      <Shield className="w-3.5 h-3.5" />
+                    </button>
+                    <ExternalLink className="w-3.5 h-3.5 text-muted" />
+                  </div>
                 </div>
               </Card>
             </Link>
