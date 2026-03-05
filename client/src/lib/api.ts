@@ -1,7 +1,9 @@
 import type {
   DatabaseInstance,
+  DiscoveredDatabase,
   HealthSummary,
   InstanceHealth,
+  HealthReport,
   OnboardPayload,
   UpdatePayload,
   CredentialsPayload,
@@ -60,6 +62,12 @@ export async function getInstanceHealth(
   id: string
 ): Promise<InstanceHealth> {
   return request(`/api/databases/${id}/health`);
+}
+
+export async function getHealthReport(
+  id: string
+): Promise<HealthReport> {
+  return request(`/api/databases/${id}/health-report`, { timeoutMs: 120_000 });
 }
 
 // ── Databases CRUD ──
@@ -154,4 +162,18 @@ export async function recordFRASnapshot(
   id: string
 ): Promise<{ success: boolean; instanceId: string; snapshotDate: string }> {
   return request(`/api/databases/${id}/fra-risk/snapshot`, { method: "POST", timeoutMs: 120_000 });
+}
+
+// ── Database Discovery ──
+
+export async function getDiscoveredDatabases(
+  id: string
+): Promise<{ instanceId: string; databases: DiscoveredDatabase[]; count: number }> {
+  return request(`/api/databases/${id}/databases`);
+}
+
+export async function refreshDatabases(
+  id: string
+): Promise<{ success: boolean; databases: DiscoveredDatabase[]; message: string }> {
+  return request(`/api/databases/${id}/databases/refresh`, { method: "POST", timeoutMs: 60_000 });
 }

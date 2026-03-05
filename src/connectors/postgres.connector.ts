@@ -108,6 +108,21 @@ export class PostgresConnector implements DatabaseConnector {
     const result = await this.pool!.query(sql, params);
     return result.rows as T[];
   }
+
+  public async listDatabases(): Promise<import("./types").DiscoveredDatabase[]> {
+    const systemDbs = ["template0", "template1"];
+    const rows = await this.query<{ datname: string; size_bytes: string | null }>(
+      `SELECT datname, pg_database_size(datname) AS size_bytes
+       FROM pg_database
+       WHERE datistemplate = false AND datallowconn = true
+       ORDER BY datname`
+    );
+    return rows.map((r) => ({
+      name: r.datname,
+      sizeBytes: r.size_bytes !== null ? Number(r.size_bytes) : null,
+      isSystem: systemDbs.includes(r.datname),
+    }));
+  }
 }
 
 export function createPostgresConnector(config?: Partial<PostgresConfig>, instanceId?: string): PostgresConnector {

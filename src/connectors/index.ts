@@ -4,6 +4,7 @@ export { MssqlConnector, createMssqlConnector } from "./mssql.connector";
 export { OracleConnector, createOracleConnector } from "./oracle.connector";
 export type {
   DatabaseConnector,
+  DiscoveredDatabase,
   HealthCheckResult,
   HealthStatus,
   DbType,

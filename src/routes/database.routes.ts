@@ -2,7 +2,7 @@ import { Router, Request, Response } from "express";
 import { OnboardingService, OnboardRequest, UpdateRequest, CredentialUpdateRequest } from "../services/onboarding.service";
 import { DatabaseRegistry } from "../database/registry";
 import { DbType, Environment } from "../connectors";
-import { TablespacePredictionEngine, FRARiskEngine } from "../analytics";
+import { TablespacePredictionEngine, FRARiskEngine, HealthEngine } from "../analytics";
 import pg from "pg";
 
 type ListFilters = {
@@ -21,6 +21,7 @@ export function createDatabaseRoutes(
   const router = Router();
   const predictionEngine = new TablespacePredictionEngine();
   const fraRiskEngine = new FRARiskEngine();
+  const healthEngine = new HealthEngine();
 
   // List all database instances with optional filters
   router.get("/", async (req: Request, res: Response) => {
@@ -90,7 +91,7 @@ export function createDatabaseRoutes(
   // Get a specific instance
   router.get("/:id", async (req: Request, res: Response) => {
     try {
-      const instanceId = req.params.id;
+      const instanceId = req.params.id as string;
       const instances = await onboardingService.listInstances();
       const instance = instances.find((i: unknown) => (i as { id: string }).id === instanceId);
 
@@ -99,10 +100,44 @@ export function createDatabaseRoutes(
         return;
       }
 
-      res.json(instance);
+      // Also fetch discovered databases
+      const databases = await onboardingService.getDiscoveredDatabases(instanceId);
+
+      res.json({ ...(instance as object), databases });
     } catch (error) {
       res.status(500).json({
         error: error instanceof Error ? error.message : "Failed to get instance"
+      });
+    }
+  });
+
+  // List discovered databases for an instance
+  router.get("/:id/databases", async (req: Request, res: Response) => {
+    try {
+      const instanceId = req.params.id as string;
+      const databases = await onboardingService.getDiscoveredDatabases(instanceId);
+      res.json({ instanceId, databases, count: databases.length });
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to list databases"
+      });
+    }
+  });
+
+  // Refresh / re-discover databases for an instance
+  router.post("/:id/databases/refresh", async (req: Request, res: Response) => {
+    try {
+      const instanceId = req.params.id as string;
+      const result = await onboardingService.refreshDatabases(instanceId);
+
+      if (result.success) {
+        res.json(result);
+      } else {
+        res.status(404).json(result);
+      }
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to refresh databases"
       });
     }
   });
@@ -256,6 +291,32 @@ export function createDatabaseRoutes(
     } catch (error) {
       res.status(500).json({
         error: error instanceof Error ? error.message : "Failed to check health"
+      });
+    }
+  });
+
+  // Full health report for specific instance (performance, availability, storage, backup, replication)
+  router.get("/:id/health-report", async (req: Request, res: Response) => {
+    try {
+      const instanceId = req.params.id as string;
+      const instance = registry.getInstance(instanceId);
+      if (!instance) {
+        res.status(404).json({ error: "Instance not found" });
+        return;
+      }
+
+      const connector = registry.getConnector(instanceId);
+      if (!connector) {
+        res.status(503).json({ error: "Instance not connected. Ensure it is active and connected." });
+        return;
+      }
+
+      const report = await healthEngine.runHealthCheck(connector, instance.dbType, instanceId);
+
+      res.json(report);
+    } catch (error) {
+      res.status(500).json({
+        error: error instanceof Error ? error.message : "Failed to generate health report"
       });
     }
   });

@@ -288,6 +288,11 @@ export default function OnboardPage() {
                   className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm text-foreground placeholder:text-muted/60 focus:outline-none focus:border-primary"
                   required
                 />
+                {form.engine !== "oracle" && (
+                  <p className="text-xs text-muted mt-1">
+                    Used for the initial connection. All databases on this instance will be discovered automatically.
+                  </p>
+                )}
               </div>
               <div>
                 <label className="block text-sm text-muted mb-1">

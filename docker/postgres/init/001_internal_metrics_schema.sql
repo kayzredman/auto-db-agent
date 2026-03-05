@@ -222,3 +222,21 @@ CREATE TABLE IF NOT EXISTS fra_snapshots (
 
 CREATE INDEX IF NOT EXISTS idx_fra_snapshots_lookup
     ON fra_snapshots (instance_id, area_name, snapshot_date DESC);
+
+-- ─── Instance Databases (discovered databases per instance) ──────────────────
+-- For PostgreSQL, MySQL, and MSSQL instances that host multiple databases.
+-- Populated during onboarding and refreshable via API.
+
+CREATE TABLE IF NOT EXISTS instance_databases (
+    id BIGSERIAL PRIMARY KEY,
+    instance_id UUID NOT NULL REFERENCES database_instances(id) ON DELETE CASCADE,
+    database_name VARCHAR(200) NOT NULL,
+    size_bytes BIGINT,
+    is_system BOOLEAN NOT NULL DEFAULT false,
+    discovered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_instance_database UNIQUE (instance_id, database_name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_instance_databases_instance
+    ON instance_databases (instance_id);

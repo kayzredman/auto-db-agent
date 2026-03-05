@@ -23,6 +23,12 @@ export type ConnectionConfig = {
   additionalOptions?: Record<string, unknown> | undefined;
 };
 
+export interface DiscoveredDatabase {
+  name: string;
+  sizeBytes: number | null;
+  isSystem: boolean;
+}
+
 export interface DatabaseConnector {
   readonly name: string;
   readonly instanceId?: string | undefined;
@@ -31,6 +37,8 @@ export interface DatabaseConnector {
   healthCheck(): Promise<HealthCheckResult>;
   isConnected(): boolean;
   query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+  /** Discover all databases on this instance (PG/MySQL/MSSQL only). */
+  listDatabases?(): Promise<DiscoveredDatabase[]>;
 }
 
 export function toPort(value: string | undefined, fallback: number): number {

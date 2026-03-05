@@ -42,6 +42,31 @@ export interface HealthMetrics {
   fra?: FRAMetric;
   failedJobs?: FailedJobMetric[];
   backups?: BackupMetric;
+  performance?: PerformanceMetrics;
+  availability?: AvailabilityMetrics;
+  replication?: ReplicationMetrics;
+}
+
+export interface PerformanceMetrics {
+  activeSessions: number;
+  cpuPercent: number | null;
+  memoryPercent: number | null;
+  slowQueries: number;
+}
+
+export interface AvailabilityMetrics {
+  instanceStatus: string; // OPEN, MOUNTED, STARTED, ONLINE, etc.
+  upSince: Date | null;
+  uptimeHours: number | null;
+  listenerStatus: string; // UP, DOWN, UNKNOWN
+  blockedSessions: number;
+}
+
+export interface ReplicationMetrics {
+  role: string; // PRIMARY, STANDBY, NONE, etc.
+  replicaStatus: string; // ACTIVE, INACTIVE, N/A
+  lagSeconds: number | null;
+  transportLagSeconds: number | null;
 }
 
 export interface InvalidObjectMetric {
@@ -184,11 +209,11 @@ const HEALTH_QUERIES = {
     tablespaces: `
       SELECT 
         f.name AS name,
-        CAST(FILEPROPERTY(f.name, 'SpaceUsed') AS BIGINT) * 8192 AS used_bytes,
-        f.size * 8192 AS total_bytes,
-        ROUND(CAST(FILEPROPERTY(f.name, 'SpaceUsed') AS FLOAT) / NULLIF(f.size, 0) * 100, 2) AS used_percent,
+        ISNULL(CAST(FILEPROPERTY(f.name, 'SpaceUsed') AS BIGINT), 0) * 8192 AS used_bytes,
+        CAST(f.size AS BIGINT) * 8192 AS total_bytes,
+        ROUND(ISNULL(CAST(FILEPROPERTY(f.name, 'SpaceUsed') AS FLOAT), 0) / NULLIF(CAST(f.size AS FLOAT), 0) * 100, 2) AS used_percent,
         CASE WHEN f.growth > 0 THEN 1 ELSE 0 END AS auto_extensible,
-        CASE WHEN f.max_size = -1 THEN NULL ELSE f.max_size * 8192 END AS max_size_bytes
+        CASE WHEN f.max_size = -1 THEN NULL ELSE CAST(f.max_size AS BIGINT) * 8192 END AS max_size_bytes
       FROM sys.database_files f
       WHERE f.type = 0`,
 
@@ -208,16 +233,21 @@ const HEALTH_QUERIES = {
 
     backups: `
       SELECT TOP 1
-        backup_finish_date AS last_backup_time,
-        type AS backup_type,
+        bs.backup_finish_date AS last_backup_time,
+        CASE bs.type
+          WHEN 'D' THEN 'FULL'
+          WHEN 'I' THEN 'DIFFERENTIAL'
+          WHEN 'L' THEN 'LOG'
+          ELSE bs.type
+        END AS backup_type,
         CASE 
-          WHEN backup_finish_date IS NOT NULL THEN 'SUCCESS'
+          WHEN bs.backup_finish_date IS NOT NULL THEN 'SUCCESS'
           ELSE 'FAILED'
         END AS status,
-        DATEDIFF(HOUR, backup_finish_date, GETDATE()) AS hours_since
-      FROM msdb.dbo.backupset
-      WHERE database_name = DB_NAME()
-      ORDER BY backup_finish_date DESC`,
+        DATEDIFF(HOUR, bs.backup_finish_date, GETDATE()) AS hours_since
+      FROM msdb.dbo.backupset bs
+      WHERE bs.database_name = DB_NAME()
+      ORDER BY bs.backup_finish_date DESC`,
   },
 
   postgres: {
@@ -236,14 +266,15 @@ const HEALTH_QUERIES = {
 
     tablespaces: `
       SELECT 
-        spcname AS name,
-        pg_tablespace_size(oid) AS used_bytes,
-        pg_tablespace_size(oid) AS total_bytes,
+        datname AS name,
+        pg_database_size(datname) AS used_bytes,
+        pg_database_size(datname) AS total_bytes,
         100.0 AS used_percent,
-        false AS auto_extensible,
+        true AS auto_extensible,
         NULL::bigint AS max_size_bytes
-      FROM pg_tablespace
-      WHERE spcname NOT IN ('pg_default', 'pg_global')`,
+      FROM pg_database
+      WHERE datistemplate = false AND datallowconn = true
+      ORDER BY pg_database_size(datname) DESC`,
 
     failedJobs: `
       SELECT 
@@ -307,6 +338,167 @@ const HEALTH_QUERIES = {
         NULL AS hours_since
       FROM DUAL
       WHERE 1=0`,
+  },
+};
+
+// ── Performance / Availability / Replication Queries ──
+
+const PERF_QUERIES = {
+  oracle: {
+    performance: `
+      SELECT
+        (SELECT COUNT(*) FROM v$session WHERE type = 'USER' AND status = 'ACTIVE') AS active_sessions,
+        (SELECT ROUND(value, 2) FROM v$sysmetric WHERE metric_name = 'Host CPU Utilization (%)' AND group_id = 2 AND ROWNUM = 1) AS cpu_percent,
+        (SELECT ROUND(value, 2) FROM v$sysmetric WHERE metric_name = 'Physical Memory Usage %' AND group_id = 2 AND ROWNUM = 1) AS memory_percent,
+        (SELECT COUNT(*) FROM v$session WHERE type = 'USER' AND status = 'ACTIVE'
+           AND last_call_et > 5) AS slow_queries
+      FROM DUAL`,
+
+    availability: `
+      SELECT
+        i.status AS instance_status,
+        i.startup_time AS up_since,
+        ROUND((SYSDATE - i.startup_time) * 24, 2) AS uptime_hours,
+        'UP' AS listener_status,
+        (SELECT COUNT(*) FROM v$session WHERE blocking_session IS NOT NULL) AS blocked_sessions
+      FROM v$instance i`,
+
+    replication: `
+      SELECT
+        d.database_role AS role,
+        NVL(
+          (SELECT DECODE(status, 'VALID', 'ACTIVE', 'ERROR', 'ERROR', 'INACTIVE')
+           FROM v$archive_dest_status WHERE dest_id = 2 AND ROWNUM = 1),
+          'N/A'
+        ) AS replica_status,
+        NULL AS lag_seconds,
+        NULL AS transport_lag_seconds
+      FROM v$database d`,
+  },
+
+  mssql: {
+    performance: `
+      SELECT
+        (SELECT COUNT(*) FROM sys.dm_exec_sessions WHERE is_user_process = 1 AND status = 'running') AS active_sessions,
+        (SELECT TOP 1
+           x.record.value('(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'int')
+         FROM (SELECT CAST(record AS XML) AS record
+               FROM sys.dm_os_ring_buffers
+               WHERE ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR') AS x
+         ORDER BY x.record.value('(./Record/@id)[1]', 'int') DESC
+        ) AS cpu_percent,
+        (SELECT ROUND(
+           CAST(pc1.cntr_value AS FLOAT)
+           / NULLIF(CAST(pc2.cntr_value AS FLOAT), 0) * 100, 2)
+         FROM sys.dm_os_performance_counters pc1
+         CROSS JOIN sys.dm_os_performance_counters pc2
+         WHERE RTRIM(pc1.counter_name) = 'Total Server Memory (KB)'
+           AND RTRIM(pc1.object_name) LIKE '%:Memory Manager'
+           AND RTRIM(pc2.counter_name) = 'Target Server Memory (KB)'
+           AND RTRIM(pc2.object_name) LIKE '%:Memory Manager'
+        ) AS memory_percent,
+        (SELECT COUNT(*) FROM sys.dm_exec_requests WHERE total_elapsed_time > 5000) AS slow_queries`,
+
+    availability: `
+      SELECT
+        ISNULL(
+          CASE WHEN CAST(SERVERPROPERTY('IsHadrEnabled') AS INT) = 1 THEN 'ONLINE (AG)' ELSE 'ONLINE' END,
+          'ONLINE'
+        ) AS instance_status,
+        si.sqlserver_start_time AS up_since,
+        DATEDIFF(HOUR, si.sqlserver_start_time, GETDATE()) AS uptime_hours,
+        'UP' AS listener_status,
+        (SELECT COUNT(*) FROM sys.dm_exec_requests WHERE blocking_session_id <> 0) AS blocked_sessions
+      FROM sys.dm_os_sys_info si`,
+
+    replication: `
+      SELECT
+        CASE
+          WHEN ISNULL(CAST(SERVERPROPERTY('IsHadrEnabled') AS INT), 0) = 1 THEN
+            ISNULL((SELECT TOP 1 role_desc FROM sys.dm_hadr_availability_replica_states WHERE is_local = 1), 'AG_MEMBER')
+          ELSE 'STANDALONE'
+        END AS role,
+        CASE
+          WHEN ISNULL(CAST(SERVERPROPERTY('IsHadrEnabled') AS INT), 0) = 1 THEN
+            ISNULL((SELECT TOP 1 synchronization_health_desc FROM sys.dm_hadr_availability_replica_states WHERE is_local = 1), 'N/A')
+          ELSE 'N/A'
+        END AS replica_status,
+        NULL AS lag_seconds,
+        NULL AS transport_lag_seconds`,
+  },
+
+  postgres: {
+    performance: `
+      SELECT
+        (SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active' AND backend_type = 'client backend') AS active_sessions,
+        (SELECT ROUND(
+          (SELECT COUNT(*) FROM pg_stat_activity WHERE backend_type = 'client backend')::numeric
+          / GREATEST(current_setting('max_connections')::int, 1) * 100, 2)
+        ) AS cpu_percent,
+        NULL::numeric AS memory_percent,
+        (SELECT COUNT(*) FROM pg_stat_activity WHERE state = 'active' AND query_start < NOW() - INTERVAL '5 seconds') AS slow_queries`,
+
+    availability: `
+      SELECT
+        'ONLINE' AS instance_status,
+        pg_postmaster_start_time() AS up_since,
+        EXTRACT(EPOCH FROM (NOW() - pg_postmaster_start_time())) / 3600 AS uptime_hours,
+        'UP' AS listener_status,
+        (SELECT COUNT(*) FROM pg_locks WHERE NOT granted) AS blocked_sessions`,
+
+    replication: `
+      SELECT
+        CASE WHEN pg_is_in_recovery() THEN 'STANDBY' ELSE 'PRIMARY' END AS role,
+        CASE
+          WHEN NOT pg_is_in_recovery() AND (SELECT COUNT(*) FROM pg_stat_replication) > 0 THEN 'ACTIVE'
+          WHEN pg_is_in_recovery() THEN 'STANDBY'
+          ELSE 'N/A'
+        END AS replica_status,
+        CASE
+          WHEN NOT pg_is_in_recovery() THEN
+            (SELECT EXTRACT(EPOCH FROM MAX(replay_lag)) FROM pg_stat_replication)
+          WHEN pg_is_in_recovery() THEN
+            EXTRACT(EPOCH FROM (NOW() - pg_last_xact_replay_timestamp()))
+          ELSE NULL
+        END AS lag_seconds,
+        NULL::numeric AS transport_lag_seconds`,
+  },
+
+  mysql: {
+    performance: `
+      SELECT
+        (SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE COMMAND != 'Sleep') AS active_sessions,
+        NULL AS cpu_percent,
+        (SELECT ROUND(
+           CAST(gs1.VARIABLE_VALUE AS DECIMAL(20,2))
+           / NULLIF(CAST(gv1.VARIABLE_VALUE AS DECIMAL(20,2)), 0) * 100, 2)
+         FROM performance_schema.global_status gs1
+         CROSS JOIN performance_schema.global_variables gv1
+         WHERE gs1.VARIABLE_NAME = 'Innodb_buffer_pool_bytes_data'
+           AND gv1.VARIABLE_NAME = 'innodb_buffer_pool_size'
+        ) AS memory_percent,
+        (SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE TIME > 5 AND COMMAND != 'Sleep') AS slow_queries`,
+
+    availability: `
+      SELECT
+        'ONLINE' AS instance_status,
+        DATE_SUB(NOW(), INTERVAL
+          (SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Uptime')
+          SECOND) AS up_since,
+        (SELECT ROUND(CAST(VARIABLE_VALUE AS DECIMAL(20,2)) / 3600, 2)
+         FROM performance_schema.global_status WHERE VARIABLE_NAME = 'Uptime') AS uptime_hours,
+        'UP' AS listener_status,
+        (SELECT COUNT(*) FROM information_schema.INNODB_TRX WHERE trx_state = 'LOCK WAIT') AS blocked_sessions`,
+
+    replication: `
+      SELECT
+        CASE
+          WHEN (SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE COMMAND LIKE 'Binlog Dump%') > 0 THEN 'PRIMARY'
+          ELSE 'STANDALONE'
+        END AS role,
+        'N/A' AS replica_status,
+        NULL AS lag_seconds,
+        NULL AS transport_lag_seconds`,
   },
 };
 
@@ -474,6 +666,13 @@ export class HealthEngine {
         );
       }
 
+      // Always run performance, availability, and replication checks
+      checkPromises.push(
+        this.checkPerformance(connector, dbType, metrics, issues),
+        this.checkAvailability(connector, dbType, metrics, issues),
+        this.checkReplication(connector, dbType, metrics)
+      );
+
       await Promise.all(checkPromises);
     } catch (error) {
       issues.push({
@@ -558,14 +757,15 @@ export class HealthEngine {
       metrics.tablespaces = results;
 
       for (const ts of results) {
-        if (ts.usedPercent >= this.thresholds.tablespaceCritical) {
+        const pct = Number(ts.usedPercent) || 0;
+        if (pct >= this.thresholds.tablespaceCritical) {
           issues.push({
             severity: "CRITICAL",
             category: "Storage",
             code: "TABLESPACE_CRITICAL",
-            message: `Tablespace ${ts.name} is ${ts.usedPercent.toFixed(1)}% full`,
+            message: `Tablespace ${ts.name} is ${pct.toFixed(1)}% full`,
             affectedObject: ts.name,
-            currentValue: ts.usedPercent,
+            currentValue: pct,
             threshold: this.thresholds.tablespaceCritical,
             detectedAt: new Date(),
           });
@@ -575,14 +775,14 @@ export class HealthEngine {
               createRecommendation(RECOMMENDATIONS_DB.TABLESPACE_CRITICAL, "TABLESPACE_CRITICAL")
             );
           }
-        } else if (ts.usedPercent >= this.thresholds.tablespaceWarning) {
+        } else if (pct >= this.thresholds.tablespaceWarning) {
           issues.push({
             severity: "WARNING",
             category: "Storage",
             code: "TABLESPACE_WARNING",
-            message: `Tablespace ${ts.name} is ${ts.usedPercent.toFixed(1)}% full`,
+            message: `Tablespace ${ts.name} is ${pct.toFixed(1)}% full`,
             affectedObject: ts.name,
-            currentValue: ts.usedPercent,
+            currentValue: pct,
             threshold: this.thresholds.tablespaceWarning,
             detectedAt: new Date(),
           });
@@ -612,15 +812,16 @@ export class HealthEngine {
       if (results.length > 0) {
         const fra = results[0]!;
         metrics.fra = fra;
+        const fraPct = Number(fra.usedPercent) || 0;
 
-        if (fra.usedPercent >= this.thresholds.fraCritical) {
+        if (fraPct >= this.thresholds.fraCritical) {
           issues.push({
             severity: "CRITICAL",
             category: "Recovery",
             code: "FRA_CRITICAL",
-            message: `Flash Recovery Area is ${fra.usedPercent.toFixed(1)}% full`,
+            message: `Flash Recovery Area is ${fraPct.toFixed(1)}% full`,
             affectedObject: fra.name,
-            currentValue: fra.usedPercent,
+            currentValue: fraPct,
             threshold: this.thresholds.fraCritical,
             detectedAt: new Date(),
           });
@@ -628,14 +829,14 @@ export class HealthEngine {
           recommendations.push(
             createRecommendation(RECOMMENDATIONS_DB.FRA_CRITICAL, "FRA_CRITICAL")
           );
-        } else if (fra.usedPercent >= this.thresholds.fraWarning) {
+        } else if (fraPct >= this.thresholds.fraWarning) {
           issues.push({
             severity: "WARNING",
             category: "Recovery",
             code: "FRA_WARNING",
-            message: `Flash Recovery Area is ${fra.usedPercent.toFixed(1)}% full`,
+            message: `Flash Recovery Area is ${fraPct.toFixed(1)}% full`,
             affectedObject: fra.name,
-            currentValue: fra.usedPercent,
+            currentValue: fraPct,
             threshold: this.thresholds.fraWarning,
             detectedAt: new Date(),
           });
@@ -693,10 +894,10 @@ export class HealthEngine {
     try {
       const query = HEALTH_QUERIES[dbType].backups;
       const results = await this.executeQuery<{
-        last_backup_time: Date | null;
-        backup_type: string;
+        lastBackupTime: Date | null;
+        backupType: string;
         status: string;
-        hours_since: number | null;
+        hoursSince: number | null;
       }>(connector, query);
 
       const backupMetric: BackupMetric = {
@@ -706,19 +907,20 @@ export class HealthEngine {
 
       if (results.length > 0) {
         const backup = results[0]!;
-        backupMetric.lastSuccessfulBackup = backup.last_backup_time ?? undefined;
-        backupMetric.lastBackupType = backup.backup_type;
+        backupMetric.lastSuccessfulBackup = backup.lastBackupTime ?? undefined;
+        backupMetric.lastBackupType = backup.backupType;
         backupMetric.lastBackupStatus = backup.status as BackupMetric["lastBackupStatus"];
-        backupMetric.hoursSinceLastBackup = backup.hours_since ?? undefined;
+        backupMetric.hoursSinceLastBackup = backup.hoursSince ?? undefined;
 
-        if (backup.hours_since !== null) {
-          if (backup.hours_since >= this.thresholds.backupCriticalHours) {
+        const hrs = backup.hoursSince !== null ? Number(backup.hoursSince) : null;
+        if (hrs !== null) {
+          if (hrs >= this.thresholds.backupCriticalHours) {
             issues.push({
               severity: "CRITICAL",
               category: "Backup",
               code: "BACKUP_CRITICAL",
-              message: `No successful backup in ${backup.hours_since.toFixed(0)} hours`,
-              currentValue: backup.hours_since,
+              message: `No successful backup in ${hrs.toFixed(0)} hours`,
+              currentValue: hrs,
               threshold: this.thresholds.backupCriticalHours,
               detectedAt: new Date(),
             });
@@ -726,13 +928,13 @@ export class HealthEngine {
             recommendations.push(
               createRecommendation(RECOMMENDATIONS_DB.BACKUP_CRITICAL, "BACKUP_CRITICAL")
             );
-          } else if (backup.hours_since >= this.thresholds.backupWarningHours) {
+          } else if (hrs >= this.thresholds.backupWarningHours) {
             issues.push({
               severity: "WARNING",
               category: "Backup",
               code: "BACKUP_WARNING",
-              message: `No successful backup in ${backup.hours_since.toFixed(0)} hours`,
-              currentValue: backup.hours_since,
+              message: `No successful backup in ${hrs.toFixed(0)} hours`,
+              currentValue: hrs,
               threshold: this.thresholds.backupWarningHours,
               detectedAt: new Date(),
             });
@@ -763,12 +965,201 @@ export class HealthEngine {
     }
   }
 
-  // Execute query using the connector's query method
+  // ── Performance check ──
+  private async checkPerformance(
+    connector: DatabaseConnector,
+    dbType: DbType,
+    metrics: HealthMetrics,
+    issues: HealthIssue[]
+  ): Promise<void> {
+    try {
+      const query = PERF_QUERIES[dbType].performance;
+      const results = await this.executeQuery<{
+        activeSessions: number;
+        cpuPercent: number | null;
+        memoryPercent: number | null;
+        slowQueries: number;
+      }>(connector, query);
+
+      if (results.length > 0) {
+        const r = results[0]!;
+        metrics.performance = {
+          activeSessions: Number(r.activeSessions) || 0,
+          cpuPercent: r.cpuPercent !== null ? Number(r.cpuPercent) : null,
+          memoryPercent: r.memoryPercent !== null ? Number(r.memoryPercent) : null,
+          slowQueries: Number(r.slowQueries) || 0,
+        };
+
+        if (metrics.performance.cpuPercent !== null && metrics.performance.cpuPercent > 90) {
+          issues.push({
+            severity: "CRITICAL",
+            category: "Performance",
+            code: "CPU_CRITICAL",
+            message: `CPU usage at ${metrics.performance.cpuPercent.toFixed(1)}%`,
+            currentValue: metrics.performance.cpuPercent,
+            threshold: 90,
+            detectedAt: new Date(),
+          });
+        }
+
+        if (metrics.performance.slowQueries > 10) {
+          issues.push({
+            severity: "WARNING",
+            category: "Performance",
+            code: "SLOW_QUERIES",
+            message: `${metrics.performance.slowQueries} slow queries detected`,
+            currentValue: metrics.performance.slowQueries,
+            threshold: 10,
+            detectedAt: new Date(),
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Performance check failed:", error);
+      metrics.performance = {
+        activeSessions: 0,
+        cpuPercent: null,
+        memoryPercent: null,
+        slowQueries: 0,
+      };
+    }
+  }
+
+  // ── Availability check ──
+  private async checkAvailability(
+    connector: DatabaseConnector,
+    dbType: DbType,
+    metrics: HealthMetrics,
+    issues: HealthIssue[]
+  ): Promise<void> {
+    try {
+      const query = PERF_QUERIES[dbType].availability;
+      const results = await this.executeQuery<{
+        instanceStatus: string;
+        upSince: Date | null;
+        uptimeHours: number | null;
+        listenerStatus: string;
+        blockedSessions: number;
+      }>(connector, query);
+
+      if (results.length > 0) {
+        const r = results[0]!;
+        metrics.availability = {
+          instanceStatus: r.instanceStatus || "UNKNOWN",
+          upSince: r.upSince ?? null,
+          uptimeHours: r.uptimeHours !== null ? Number(r.uptimeHours) : null,
+          listenerStatus: r.listenerStatus || "UNKNOWN",
+          blockedSessions: Number(r.blockedSessions) || 0,
+        };
+
+        if (metrics.availability.blockedSessions > 5) {
+          issues.push({
+            severity: "WARNING",
+            category: "Availability",
+            code: "BLOCKED_SESSIONS",
+            message: `${metrics.availability.blockedSessions} blocked sessions detected`,
+            currentValue: metrics.availability.blockedSessions,
+            threshold: 5,
+            detectedAt: new Date(),
+          });
+        }
+      }
+    } catch (error) {
+      console.error("Availability check failed:", error);
+      metrics.availability = {
+        instanceStatus: "UNKNOWN",
+        upSince: null,
+        uptimeHours: null,
+        listenerStatus: "UNKNOWN",
+        blockedSessions: 0,
+      };
+    }
+  }
+
+  // ── Replication check ──
+  private async checkReplication(
+    connector: DatabaseConnector,
+    dbType: DbType,
+    metrics: HealthMetrics
+  ): Promise<void> {
+    try {
+      const query = PERF_QUERIES[dbType].replication;
+      const results = await this.executeQuery<{
+        role: string;
+        replicaStatus: string;
+        lagSeconds: number | null;
+        transportLagSeconds: number | null;
+      }>(connector, query);
+
+      if (results.length > 0) {
+        const r = results[0]!;
+        metrics.replication = {
+          role: r.role || "UNKNOWN",
+          replicaStatus: r.replicaStatus || "N/A",
+          lagSeconds: r.lagSeconds !== null ? Number(r.lagSeconds) : null,
+          transportLagSeconds: r.transportLagSeconds !== null ? Number(r.transportLagSeconds) : null,
+        };
+
+        // Oracle Data Guard: attempt to fetch lag separately (safe if DG not configured)
+        if (dbType === "oracle" && metrics.replication.role !== "STANDALONE") {
+          try {
+            const lagRows = await this.executeQuery<{
+              applyLagSecs: number | null;
+              transportLagSecs: number | null;
+            }>(connector, `
+              SELECT
+                (SELECT EXTRACT(DAY FROM apply_lag) * 86400 +
+                        EXTRACT(HOUR FROM apply_lag) * 3600 +
+                        EXTRACT(MINUTE FROM apply_lag) * 60 +
+                        EXTRACT(SECOND FROM apply_lag)
+                 FROM v$dataguard_stats WHERE name = 'apply lag' AND ROWNUM = 1) AS apply_lag_secs,
+                (SELECT EXTRACT(DAY FROM transport_lag) * 86400 +
+                        EXTRACT(HOUR FROM transport_lag) * 3600 +
+                        EXTRACT(MINUTE FROM transport_lag) * 60 +
+                        EXTRACT(SECOND FROM transport_lag)
+                 FROM v$dataguard_stats WHERE name = 'transport lag' AND ROWNUM = 1) AS transport_lag_secs
+              FROM DUAL
+            `);
+            if (lagRows.length > 0) {
+              const lag = lagRows[0]!;
+              if (lag.applyLagSecs !== null) metrics.replication.lagSeconds = Number(lag.applyLagSecs);
+              if (lag.transportLagSecs !== null) metrics.replication.transportLagSeconds = Number(lag.transportLagSecs);
+            }
+          } catch {
+            // Data Guard stats not available — leave lag as null
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Replication check failed:", error);
+      metrics.replication = {
+        role: "UNKNOWN",
+        replicaStatus: "N/A",
+        lagSeconds: null,
+        transportLagSeconds: null,
+      };
+    }
+  }
+
+  // Execute query using the connector's query method.
+  // Normalizes column keys: UPPERCASE → snake_case → camelCase.
+  // Oracle returns UPPERCASE; SQL aliases use snake_case. This ensures
+  // the returned objects match our camelCase TypeScript interfaces.
   private async executeQuery<T>(
     connector: DatabaseConnector,
     query: string
   ): Promise<T[]> {
-    return await connector.query<T>(query);
+    const raw = await connector.query<Record<string, unknown>>(query);
+    return raw.map((row) => {
+      const normalized: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(row)) {
+        const camel = key
+          .toLowerCase()
+          .replace(/_([a-z0-9])/g, (_, ch: string) => ch.toUpperCase());
+        normalized[camel] = value;
+      }
+      return normalized as T;
+    });
   }
 }
 

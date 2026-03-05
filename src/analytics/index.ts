@@ -16,6 +16,9 @@ export type {
   FRAMetric,
   FailedJobMetric,
   BackupMetric,
+  PerformanceMetrics,
+  AvailabilityMetrics,
+  ReplicationMetrics,
   HealthEngineConfig,
 } from "./healthEngine";
 

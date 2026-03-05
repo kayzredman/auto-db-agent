@@ -5,6 +5,16 @@ export type OracleRole = "default" | "sysdba" | "sysoper" | "sysasm" | "sysbacku
 export type Environment = "production" | "staging" | "development" | "dr";
 export type InstanceStatus = "active" | "inactive" | "decommissioned";
 
+// ── Discovered Databases (multi-DB instances) ──
+
+export interface DiscoveredDatabase {
+  name: string;
+  sizeBytes: number | null;
+  isSystem: boolean;
+  discoveredAt: string;
+  lastSeenAt: string;
+}
+
 export interface DatabaseInstance {
   id: string;
   name: string;
@@ -28,6 +38,7 @@ export interface DatabaseInstance {
   onboarded_at: string;
   updated_by: string | null;
   updated_at: string | null;
+  databases?: DiscoveredDatabase[];
 }
 
 export interface HealthSummary {
@@ -139,6 +150,116 @@ export interface TablespacePredictionReport {
 // ── FRA Risk Analysis ──
 
 export type FRARisk = "CRITICAL" | "HIGH" | "WARNING" | "OK";
+
+// ── Health Report (Full) ──
+
+export type HealthSeverity = "CRITICAL" | "WARNING" | "INFO" | "OK";
+export type OverallStatus = "CRITICAL" | "WARNING" | "HEALTHY";
+
+export interface HealthIssue {
+  severity: HealthSeverity;
+  category: string;
+  code: string;
+  message: string;
+  affectedObject?: string;
+  currentValue?: number | string;
+  threshold?: number | string;
+  detectedAt: string;
+}
+
+export interface HealthRecommendation {
+  priority: "HIGH" | "MEDIUM" | "LOW";
+  category: string;
+  title: string;
+  description: string;
+  action: string;
+  reference?: string;
+  relatedIssueCode?: string;
+}
+
+export interface PerformanceMetrics {
+  activeSessions: number;
+  cpuPercent: number | null;
+  memoryPercent: number | null;
+  slowQueries: number;
+}
+
+export interface AvailabilityMetrics {
+  instanceStatus: string;
+  upSince: string | null;
+  uptimeHours: number | null;
+  listenerStatus: string;
+  blockedSessions: number;
+}
+
+export interface ReplicationMetrics {
+  role: string;
+  replicaStatus: string;
+  lagSeconds: number | null;
+  transportLagSeconds: number | null;
+}
+
+export interface TablespaceMetricHealth {
+  name: string;
+  usedBytes: number;
+  totalBytes: number;
+  usedPercent: number;
+  autoExtensible: boolean;
+  maxSizeBytes?: number;
+}
+
+export interface FRAMetricHealth {
+  name: string;
+  usedBytes: number;
+  totalBytes: number;
+  usedPercent: number;
+  reclaimableBytes: number;
+}
+
+export interface BackupMetricHealth {
+  lastSuccessfulBackup?: string;
+  lastBackupType?: string;
+  lastBackupStatus: "SUCCESS" | "FAILED" | "RUNNING" | "UNKNOWN";
+  hoursSinceLastBackup?: number;
+  failedBackupsLast24h: number;
+}
+
+export interface FailedJobMetricHealth {
+  jobName: string;
+  jobType: string;
+  lastRunTime?: string;
+  failureMessage?: string;
+  failureCount: number;
+}
+
+export interface InvalidObjectMetricHealth {
+  owner: string;
+  objectName: string;
+  objectType: string;
+  status: string;
+}
+
+export interface HealthReportMetrics {
+  invalidObjects?: InvalidObjectMetricHealth[];
+  tablespaces?: TablespaceMetricHealth[];
+  fra?: FRAMetricHealth;
+  failedJobs?: FailedJobMetricHealth[];
+  backups?: BackupMetricHealth;
+  performance?: PerformanceMetrics;
+  availability?: AvailabilityMetrics;
+  replication?: ReplicationMetrics;
+}
+
+export interface HealthReport {
+  instanceId: string;
+  dbType: DbType;
+  overallStatus: OverallStatus;
+  checkedAt: string;
+  checkDurationMs: number;
+  issues: HealthIssue[];
+  recommendations: HealthRecommendation[];
+  metrics: HealthReportMetrics;
+}
 
 export interface FRARiskIssue {
   severity: FRARisk;

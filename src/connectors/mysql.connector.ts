@@ -112,6 +112,23 @@ export class MysqlConnector implements DatabaseConnector {
     const [rows] = await this.pool!.query(sql, params);
     return rows as T[];
   }
+
+  public async listDatabases(): Promise<import("./types").DiscoveredDatabase[]> {
+    const systemDbs = ["information_schema", "performance_schema", "mysql", "sys"];
+    const rows = await this.query<{ SCHEMA_NAME: string; size_bytes: string | null }>(
+      `SELECT s.SCHEMA_NAME,
+              IFNULL(SUM(t.DATA_LENGTH + t.INDEX_LENGTH), 0) AS size_bytes
+       FROM information_schema.SCHEMATA s
+       LEFT JOIN information_schema.TABLES t ON s.SCHEMA_NAME = t.TABLE_SCHEMA
+       GROUP BY s.SCHEMA_NAME
+       ORDER BY s.SCHEMA_NAME`
+    );
+    return rows.map((r) => ({
+      name: r.SCHEMA_NAME,
+      sizeBytes: r.size_bytes !== null ? Number(r.size_bytes) : null,
+      isSystem: systemDbs.includes(r.SCHEMA_NAME.toLowerCase()),
+    }));
+  }
 }
 
 export function createMysqlConnector(config?: Partial<MysqlConfig>, instanceId?: string): MysqlConnector {

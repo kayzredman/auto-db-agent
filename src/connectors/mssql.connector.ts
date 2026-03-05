@@ -121,6 +121,24 @@ export class MssqlConnector implements DatabaseConnector {
     const result = await this.pool!.request().query(sql);
     return result.recordset as T[];
   }
+
+  public async listDatabases(): Promise<import("./types").DiscoveredDatabase[]> {
+    const systemDbs = ["master", "tempdb", "model", "msdb"];
+    const rows = await this.query<{ name: string; size_bytes: number | null }>(
+      `SELECT d.name,
+              SUM(CAST(mf.size AS BIGINT) * 8 * 1024) AS size_bytes
+       FROM sys.databases d
+       LEFT JOIN sys.master_files mf ON d.database_id = mf.database_id
+       WHERE d.state_desc = 'ONLINE'
+       GROUP BY d.name
+       ORDER BY d.name`
+    );
+    return rows.map((r) => ({
+      name: r.name,
+      sizeBytes: r.size_bytes !== null ? Number(r.size_bytes) : null,
+      isSystem: systemDbs.includes(r.name.toLowerCase()),
+    }));
+  }
 }
 
 export function createMssqlConnector(config?: Partial<MssqlConfig>, instanceId?: string): MssqlConnector {

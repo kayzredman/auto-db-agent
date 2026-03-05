@@ -2,7 +2,8 @@ import { Pool } from "pg";
 import {
   DbType,
   Environment,
-  ConnectionConfig
+  ConnectionConfig,
+  DiscoveredDatabase
 } from "../connectors";
 import { PostgresConnector } from "../connectors/postgres.connector";
 import { MysqlConnector } from "../connectors/mysql.connector";
@@ -35,6 +36,7 @@ export type OnboardResult = {
   success: boolean;
   instanceId?: string;
   message: string;
+  discoveredDatabases?: DiscoveredDatabase[] | undefined;
   validationResult?: {
     connected: boolean;
     latencyMs: number;
@@ -144,10 +146,21 @@ export class OnboardingService {
       port: request.port
     }, ipAddress);
 
+    // 5. Auto-discover databases for multi-DB engines (PG, MySQL, MSSQL)
+    let discoveredDatabases: DiscoveredDatabase[] | undefined;
+    if (request.dbType !== "oracle") {
+      try {
+        discoveredDatabases = await this.discoverAndStoreDatabases(instanceId, request);
+      } catch {
+        // Non-fatal: discovery failure shouldn't block onboarding
+      }
+    }
+
     return {
       success: true,
       instanceId,
       message: `Database instance "${request.name}" onboarded successfully`,
+      discoveredDatabases,
       validationResult
     };
   }
@@ -404,6 +417,146 @@ export class OnboardingService {
 
     const result = await this.metricsPool.query(query, params);
     return result.rows;
+  }
+
+  /** Discover databases on an instance and upsert them into instance_databases. */
+  private async discoverAndStoreDatabases(
+    instanceId: string,
+    request: Pick<OnboardRequest, "dbType" | "host" | "port" | "databaseName" | "username" | "password" | "additionalOptions">
+  ): Promise<DiscoveredDatabase[]> {
+    const config: ConnectionConfig = {
+      host: request.host,
+      port: request.port,
+      database: request.databaseName,
+      username: request.username,
+      password: request.password,
+      connectionTimeoutMs: 10000,
+      additionalOptions: request.additionalOptions
+    };
+
+    let connector: ReturnType<typeof PostgresConnector.fromConnectionConfig> |
+                    ReturnType<typeof MysqlConnector.fromConnectionConfig> |
+                    ReturnType<typeof MssqlConnector.fromConnectionConfig>;
+
+    switch (request.dbType) {
+      case "postgres":
+        connector = PostgresConnector.fromConnectionConfig(config);
+        break;
+      case "mysql":
+        connector = MysqlConnector.fromConnectionConfig(config);
+        break;
+      case "mssql":
+        connector = MssqlConnector.fromConnectionConfig(config);
+        break;
+      default:
+        return [];
+    }
+
+    try {
+      await connector.connect();
+      const databases = await connector.listDatabases();
+      await connector.disconnect();
+
+      // Upsert into instance_databases
+      for (const db of databases) {
+        await this.metricsPool.query(`
+          INSERT INTO instance_databases (instance_id, database_name, size_bytes, is_system)
+          VALUES ($1, $2, $3, $4)
+          ON CONFLICT (instance_id, database_name)
+          DO UPDATE SET size_bytes = EXCLUDED.size_bytes, last_seen_at = NOW()
+        `, [instanceId, db.name, db.sizeBytes, db.isSystem]);
+      }
+
+      return databases;
+    } catch {
+      return [];
+    }
+  }
+
+  /** Re-discover databases for an existing instance. Called from the refresh endpoint. */
+  public async refreshDatabases(instanceId: string): Promise<{
+    success: boolean;
+    databases: DiscoveredDatabase[];
+    message: string;
+  }> {
+    // Get instance connection details
+    const result = await this.metricsPool.query<{
+      db_type: DbType;
+      host: string;
+      port: number;
+      database_name: string;
+      credentials_encrypted: Buffer;
+      credentials_iv: Buffer;
+      credentials_tag: Buffer;
+    }>(`
+      SELECT db_type, host, port, database_name,
+             credentials_encrypted, credentials_iv, credentials_tag
+      FROM database_instances WHERE id = $1
+    `, [instanceId]);
+
+    if (result.rows.length === 0) {
+      return { success: false, databases: [], message: "Instance not found" };
+    }
+
+    const row = result.rows[0]!;
+
+    if (row.db_type === "oracle") {
+      return { success: true, databases: [], message: "Oracle instances do not support multi-database discovery" };
+    }
+
+    // Decrypt credentials
+    const { decryptCredentials } = await import("./crypto.service");
+    const credentials = decryptCredentials({
+      encrypted: row.credentials_encrypted,
+      iv: row.credentials_iv,
+      tag: row.credentials_tag
+    });
+
+    const databases = await this.discoverAndStoreDatabases(instanceId, {
+      dbType: row.db_type,
+      host: row.host,
+      port: row.port,
+      databaseName: row.database_name,
+      username: credentials.username,
+      password: credentials.password,
+      additionalOptions: credentials.additionalOptions
+    });
+
+    return {
+      success: true,
+      databases,
+      message: `Discovered ${databases.length} database(s)`
+    };
+  }
+
+  /** Get stored discovered databases for an instance. */
+  public async getDiscoveredDatabases(instanceId: string): Promise<{
+    name: string;
+    sizeBytes: number | null;
+    isSystem: boolean;
+    discoveredAt: string;
+    lastSeenAt: string;
+  }[]> {
+    const result = await this.metricsPool.query<{
+      database_name: string;
+      size_bytes: string | null;
+      is_system: boolean;
+      discovered_at: Date;
+      last_seen_at: Date;
+    }>(`
+      SELECT database_name, size_bytes, is_system, discovered_at, last_seen_at
+      FROM instance_databases
+      WHERE instance_id = $1
+      ORDER BY is_system ASC, database_name ASC
+    `, [instanceId]);
+
+    return result.rows.map((r) => ({
+      name: r.database_name,
+      sizeBytes: r.size_bytes !== null ? Number(r.size_bytes) : null,
+      isSystem: r.is_system,
+      discoveredAt: r.discovered_at.toISOString(),
+      lastSeenAt: r.last_seen_at.toISOString(),
+    }));
   }
 
   private async validateConnectivity(request: OnboardRequest): Promise<{
