@@ -442,6 +442,38 @@ export default function FRAAnalysisPage() {
             <div className="text-center text-muted text-sm">No flashback data available.</div>
           )}
         </Card>
+        {/* Replication (always show) */}
+        <Card className="p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <Activity className="w-4 h-4 text-info" />
+            <h2 className="text-sm font-semibold text-primary uppercase tracking-wide">
+              Replication Status
+            </h2>
+          </div>
+          {/* Static table based on provided screen capture */}
+          <div className="overflow-x-auto">
+            <table className="min-w-[420px] rounded-xl border border-border bg-surface text-sm text-left shadow-sm">
+              <thead>
+                <tr>
+                  <th className="px-4 py-2 border-b border-border font-semibold tracking-wide text-sm text-white" style={{background: '#1e293b'}}>THREAD#</th>
+                  <th className="px-4 py-2 border-b border-border font-semibold tracking-wide text-sm text-white" style={{background: '#1e293b'}}>LAST_SEQ</th>
+                  <th className="px-4 py-2 border-b border-border font-semibold tracking-wide text-sm text-white" style={{background: '#1e293b'}}>APPLIED</th>
+                  <th className="px-4 py-2 border-b border-border font-semibold tracking-wide text-sm text-white" style={{background: '#1e293b'}}>LAST APPLIED TIME</th>
+                  <th className="px-4 py-2 border-b border-border font-semibold tracking-wide text-sm text-white" style={{background: '#1e293b'}}>GAP</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="bg-info/10 hover:bg-info/20 transition-colors">
+                  <td className="px-4 py-2 border-b border-border font-semibold" style={{color: '#3b83f6'}}>1</td>
+                  <td className="px-4 py-2 border-b border-border font-semibold" style={{color: '#3b83f6'}}>1561</td>
+                  <td className="px-4 py-2 border-b border-border font-semibold" style={{color: '#3b83f6'}}>1561</td>
+                  <td className="px-4 py-2 border-b border-border font-semibold whitespace-nowrap" style={{color: '#3b83f6'}}>08-MAR-26 04:13:14</td>
+                  <td className="px-4 py-2 border-b border-border font-semibold" style={{color: '#3b83f6'}}>0</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </Card>
         {/* Issues (always show) */}
         <div>
           <h3 className="text-base font-semibold text-primary mb-2 mt-6 flex items-center gap-2">
