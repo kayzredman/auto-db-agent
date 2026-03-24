@@ -185,6 +185,15 @@ export default function DatabasesPage() {
                   </div>
                   <StatusBadge status={inst.status} />
                 </div>
+                          {/* Navigation buttons for FRA Risk and Predictions */}
+                          <div className="flex gap-2 mt-4">
+                            <Link href={`/databases/${inst.id}/fra-risk`}>
+                              <Button size="sm" variant="outline">FRA Risk</Button>
+                            </Link>
+                            <Link href={`/databases/${inst.id}/predictions`}>
+                              <Button size="sm" variant="outline">Predictions</Button>
+                            </Link>
+                          </div>
 
                 <div className="space-y-2 text-xs text-muted">
                   <div className="flex items-center justify-between">

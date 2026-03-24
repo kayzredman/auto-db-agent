@@ -1,4 +1,14 @@
 "use client";
+// ...existing code...
+import { listDatabases, getFRARisk, getHealthReport } from "@/lib/api";
+import type {
+  DatabaseInstance,
+  FRARiskReport,
+  FRARisk,
+  FRARiskIssue,
+  FRARiskRecommendation,
+  HealthReport
+} from "@/lib/types";
 // Helper constants and components
 const riskIcons: Record<FRARisk, typeof Shield> = {
   CRITICAL: AlertTriangle,
@@ -140,26 +150,21 @@ import {
   Camera
 } from "lucide-react";
 import { Card, Button, Spinner } from "@/components/ui";
-import { listDatabases, getFRARisk } from "@/lib/api";
-import {
-  DatabaseInstance,
-  FRARiskReport,
-  FRARisk,
-  FRARiskIssue,
-  FRARiskRecommendation
-} from "@/lib/types";
+// ...existing code...
 // --- Main FRAAnalysisPage ---
 export default function FRAAnalysisPage() {
   const params = useParams();
   const router = useRouter();
   const id = params?.id as string;
-  const [instances, setInstances] = useState<DatabaseInstance[]>([]);
+  // const [instances, setInstances] = useState<DatabaseInstance[]>([]);
   const [prodInstance, setProdInstance] = useState<DatabaseInstance | null>(null);
   const [drInstance, setDrInstance] = useState<DatabaseInstance | null>(null);
   const [prodReport, setProdReport] = useState<FRARiskReport | null>(null);
   const [drReport, setDrReport] = useState<FRARiskReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [prodHealth, setProdHealth] = useState<HealthReport | null>(null);
+  const [drHealth, setDrHealth] = useState<HealthReport | null>(null);
 
   // Find the prod/dr pair for this id
   const findProdDrPair = useCallback((all: DatabaseInstance[], currentId: string) => {
@@ -181,12 +186,19 @@ export default function FRAAnalysisPage() {
     try {
       const dbsResp = await listDatabases();
       const dbs = Array.isArray(dbsResp) ? dbsResp : dbsResp.instances || [];
-      setInstances(dbs);
+
       const { prod, dr } = findProdDrPair(dbs, id);
       setProdInstance(prod ?? null);
       setDrInstance(dr ?? null);
-      if (prod) setProdReport(await getFRARisk(prod.id));
-      if (dr) setDrReport(await getFRARisk(dr.id));
+      if (prod) {
+        setProdReport(await getFRARisk(prod.id));
+        setProdHealth(await getHealthReport(prod.id));
+      }
+      if (dr) {
+// ...existing code...
+        setDrReport(await getFRARisk(dr.id));
+        setDrHealth(await getHealthReport(dr.id));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load FRA risk data");
     } finally {
@@ -226,7 +238,7 @@ export default function FRAAnalysisPage() {
   }
 
   // Helper to render a full FRA section for a given instance/report
-  function renderFRASection(label: string, instance: DatabaseInstance | null, report: FRARiskReport | null) {
+  function renderFRASection(label: string, instance: DatabaseInstance | null, report: FRARiskReport | null, health: HealthReport | null, partnerInstance: DatabaseInstance | null) {
     return (
       <div className="space-y-6 border-b border-border pb-10 mb-10">
         {/* Section Header */}
@@ -442,33 +454,36 @@ export default function FRAAnalysisPage() {
             <div className="text-center text-muted text-sm">No flashback data available.</div>
           )}
         </Card>
-        {/* Replication (always show) */}
-        <Card className="p-5">
+        {/* Replication (industry-grade, all DBs) */}
+        <Card className="p-5 bg-[#1e293b] border-none shadow-none">
           <div className="flex items-center gap-2 mb-4">
-            <Activity className="w-4 h-4 text-info" />
-            <h2 className="text-sm font-semibold text-primary uppercase tracking-wide">
+            <Activity className="w-4 h-4 text-[#3b83f6]" />
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-[#3b83f6]">
               Replication Status
             </h2>
           </div>
-          {/* Static table based on provided screen capture */}
           <div className="overflow-x-auto">
-            <table className="min-w-[420px] rounded-xl border border-border bg-surface text-sm text-left shadow-sm">
+            <table className="min-w-[700px] rounded-xl border border-[#26324a] bg-[#1e293b] text-sm text-left">
               <thead>
                 <tr>
-                  <th className="px-4 py-2 border-b border-border font-semibold tracking-wide text-sm text-white" style={{background: '#1e293b'}}>THREAD#</th>
-                  <th className="px-4 py-2 border-b border-border font-semibold tracking-wide text-sm text-white" style={{background: '#1e293b'}}>LAST_SEQ</th>
-                  <th className="px-4 py-2 border-b border-border font-semibold tracking-wide text-sm text-white" style={{background: '#1e293b'}}>APPLIED</th>
-                  <th className="px-4 py-2 border-b border-border font-semibold tracking-wide text-sm text-white" style={{background: '#1e293b'}}>LAST APPLIED TIME</th>
-                  <th className="px-4 py-2 border-b border-border font-semibold tracking-wide text-sm text-white" style={{background: '#1e293b'}}>GAP</th>
+                  <th className="px-4 py-2 border-b border-[#26324a] font-semibold tracking-wide text-sm text-white bg-[#22304a]">DB Name</th>
+                  <th className="px-4 py-2 border-b border-[#26324a] font-semibold tracking-wide text-sm text-white bg-[#22304a]">Replication State</th>
+                  <th className="px-4 py-2 border-b border-[#26324a] font-semibold tracking-wide text-sm text-white bg-[#22304a]">Role</th>
+                  <th className="px-4 py-2 border-b border-[#26324a] font-semibold tracking-wide text-sm text-white bg-[#22304a]">Partner</th>
+                  <th className="px-4 py-2 border-b border-[#26324a] font-semibold tracking-wide text-sm text-white bg-[#22304a]">Last Log Applied</th>
+                  <th className="px-4 py-2 border-b border-[#26324a] font-semibold tracking-wide text-sm text-white bg-[#22304a]">Lag</th>
+                  <th className="px-4 py-2 border-b border-[#26324a] font-semibold tracking-wide text-sm text-white bg-[#22304a]">Info</th>
                 </tr>
               </thead>
               <tbody>
-                <tr className="bg-info/10 hover:bg-info/20 transition-colors">
-                  <td className="px-4 py-2 border-b border-border font-semibold" style={{color: '#3b83f6'}}>1</td>
-                  <td className="px-4 py-2 border-b border-border font-semibold" style={{color: '#3b83f6'}}>1561</td>
-                  <td className="px-4 py-2 border-b border-border font-semibold" style={{color: '#3b83f6'}}>1561</td>
-                  <td className="px-4 py-2 border-b border-border font-semibold whitespace-nowrap" style={{color: '#3b83f6'}}>08-MAR-26 04:13:14</td>
-                  <td className="px-4 py-2 border-b border-border font-semibold" style={{color: '#3b83f6'}}>0</td>
+                <tr className="bg-[#22304a] hover:bg-[#26324a] transition-colors">
+                  <td className="px-4 py-2 border-b border-[#26324a] font-semibold text-[#3b83f6]">{instance?.display_name ?? instance?.name ?? 'N/A'}</td>
+                  <td className="px-4 py-2 border-b border-[#26324a] font-medium text-[#3b83f6]">{health?.metrics.replication?.replicaStatus ?? 'N/A'}</td>
+                  <td className="px-4 py-2 border-b border-[#26324a] font-medium text-[#3b83f6]">{health?.metrics.replication?.role ?? 'N/A'}</td>
+                  <td className="px-4 py-2 border-b border-[#26324a] font-medium text-[#3b83f6]">{partnerInstance?.display_name ?? partnerInstance?.name ?? 'N/A'}</td>
+                  <td className="px-4 py-2 border-b border-[#26324a] font-medium text-[#3b83f6]">{health?.checkedAt ? new Date(health.checkedAt).toLocaleString() : 'N/A'}</td>
+                  <td className="px-4 py-2 border-b border-[#26324a] font-medium text-[#3b83f6]">{health?.metrics.replication?.lagSeconds != null ? health.metrics.replication.lagSeconds : 'N/A'}</td>
+                  <td className="px-4 py-2 border-b border-[#26324a] font-medium text-[#3b83f6]">{health?.metrics.replication?.replicaStatus ?? 'N/A'}</td>
                 </tr>
               </tbody>
             </table>
@@ -511,8 +526,8 @@ export default function FRAAnalysisPage() {
   return (
     <div className="max-w-5xl mx-auto py-8">
       {/* Always show PROD first, then DR if available */}
-      {renderFRASection("PROD", prodInstance, prodReport)}
-      {drInstance && drReport && renderFRASection("DR", drInstance, drReport)}
+      {renderFRASection("PROD", prodInstance, prodReport, prodHealth, drInstance)}
+      {drInstance && drReport && renderFRASection("DR", drInstance, drReport, drHealth, prodInstance)}
     </div>
   );
 }

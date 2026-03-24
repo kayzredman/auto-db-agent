@@ -1,7 +1,8 @@
 {
-  "name": "auto-dba-agent",
+  "name": "auto-dba-agent-monorepo",
+  "private": true,
   "version": "1.0.0",
-  "description": "",
+  "description": "Monorepo for Auto DBA Agent (Turborepo + pnpm workspaces)",
   "main": "index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/app.ts",
@@ -37,6 +38,7 @@
     "@types/mssql": "^9.1.9",
     "@types/node": "^25.3.3",
     "@types/oracledb": "^6.10.1",
-    "@types/pg": "^8.18.0"
+    "@types/pg": "^8.18.0",
+    "turbo": "^1.13.0"
   }
 }

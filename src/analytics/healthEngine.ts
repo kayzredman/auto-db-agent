@@ -421,19 +421,38 @@ const PERF_QUERIES = {
       FROM sys.dm_os_sys_info si`,
 
     replication: `
-      SELECT
-        CASE
-          WHEN ISNULL(CAST(SERVERPROPERTY('IsHadrEnabled') AS INT), 0) = 1 THEN
-            ISNULL((SELECT TOP 1 role_desc FROM sys.dm_hadr_availability_replica_states WHERE is_local = 1), 'AG_MEMBER')
-          ELSE 'STANDALONE'
-        END AS role,
-        CASE
-          WHEN ISNULL(CAST(SERVERPROPERTY('IsHadrEnabled') AS INT), 0) = 1 THEN
-            ISNULL((SELECT TOP 1 synchronization_health_desc FROM sys.dm_hadr_availability_replica_states WHERE is_local = 1), 'N/A')
-          ELSE 'N/A'
-        END AS replica_status,
-        NULL AS lag_seconds,
-        NULL AS transport_lag_seconds`,
+        SELECT
+          CASE
+            WHEN ISNULL(CAST(SERVERPROPERTY('IsHadrEnabled') AS INT), 0) = 1 THEN
+              ISNULL((SELECT TOP 1 role_desc FROM sys.dm_hadr_availability_replica_states WHERE is_local = 1), 'AG_MEMBER')
+            WHEN EXISTS (SELECT 1 FROM sys.database_mirroring WHERE mirroring_guid IS NOT NULL AND mirroring_state IS NOT NULL) THEN
+              ISNULL((SELECT TOP 1
+                CASE mirroring_role
+                  WHEN 1 THEN 'PRINCIPAL'
+                  WHEN 2 THEN 'MIRROR'
+                  ELSE 'UNKNOWN'
+                END
+              FROM sys.database_mirroring WHERE mirroring_guid IS NOT NULL AND mirroring_state IS NOT NULL), 'UNKNOWN')
+            ELSE 'STANDALONE'
+          END AS role,
+          CASE
+            WHEN ISNULL(CAST(SERVERPROPERTY('IsHadrEnabled') AS INT), 0) = 1 THEN
+              ISNULL((SELECT TOP 1 synchronization_health_desc FROM sys.dm_hadr_availability_replica_states WHERE is_local = 1), 'N/A')
+            WHEN EXISTS (SELECT 1 FROM sys.database_mirroring WHERE mirroring_guid IS NOT NULL AND mirroring_state IS NOT NULL) THEN
+              ISNULL((SELECT TOP 1
+                CASE mirroring_state
+                  WHEN 1 THEN 'SYNCHRONIZED'
+                  WHEN 2 THEN 'SYNCHRONIZING'
+                  WHEN 3 THEN 'PENDING_FAILOVER'
+                  WHEN 4 THEN 'SUSPENDED'
+                  WHEN 5 THEN 'DISCONNECTED'
+                  ELSE 'UNKNOWN'
+                END
+              FROM sys.database_mirroring WHERE mirroring_guid IS NOT NULL AND mirroring_state IS NOT NULL), 'UNKNOWN')
+            ELSE 'N/A'
+          END AS replica_status,
+          NULL AS lag_seconds,
+          NULL AS transport_lag_seconds`,
   },
 
   postgres: {

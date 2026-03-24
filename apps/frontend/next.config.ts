@@ -1,5 +1,6 @@
 import type { NextConfig } from "next";
 
+
 const nextConfig: NextConfig = {
   async rewrites() {
     return [
@@ -16,6 +17,12 @@ const nextConfig: NextConfig = {
         destination: "http://localhost:3000/health",
       },
     ];
+  },
+  webpack(config) {
+    config.resolve = config.resolve || {};
+    config.resolve.alias = config.resolve.alias || {};
+    config.resolve.alias['@'] = require('path').resolve(__dirname, 'src');
+    return config;
   },
 };
 

@@ -1,0 +1,20 @@
+{
+  "name": "onboarding-service",
+  "version": "1.0.0",
+  "main": "dist/app.js",
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/app.ts",
+    "build": "tsc",
+    "start": "node dist/app.js"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
+    "pg": "^8.19.0"
+  },
+  "devDependencies": {
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.3"
+  }
+}
